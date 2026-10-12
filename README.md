@@ -81,6 +81,18 @@ review findings, and after `--refresh`, PRs merged without human commits, closed
 Efficiency: minutes and tokens per ticket, retries (still-green, test-fix, failed red phases), diff size and
 test share, per stage/model call counts, durations and tokens.
 
+### Context budget
+
+`contextBudget` (default 100k tokens for `plan`, `review` and `escalate`; implementation has none) is checked
+against each session's peak per-request context, not its cumulative tokens. Going over logs a warning and a
+`context_budget_exceeded` event; `ff plan` with Claude also shows a live notice when crossing it (and every further
+50k). Nothing is blocked. `contextBudget.byModel` sets a per-model budget, e.g. `{ "byModel": { "opus": 150000 } }`.
+
+The 100k default is a conservative convention, not a measured cliff: research shows quality degrading gradually with
+context length, depending on model, task and distracting content. `ff stats` shows review pass rate, serious findings,
+implementation first-round pass and downstream plan quality bucketed by peak context (<50k, 50-100k, 100-150k, 150k+),
+so the budget can be tuned from your own runs.
+
 To compare configurations, keep a throwaway sandbox repo with a fixed plan and a reset script, then:
 
 ```sh

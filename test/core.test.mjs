@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mergeConfig, parseCommands, loadConfig, loadPersona } from '../lib/config.mjs';
+import { mergeConfig, parseCommands, loadConfig, loadPersona, budgetFor } from '../lib/config.mjs';
 import { topoSort } from '../lib/publish.mjs';
 import { isReady } from '../lib/github.mjs';
 import { stageForRound, pool } from '../lib/run.mjs';
@@ -226,6 +226,31 @@ test('codexTranscriptMetrics takes cumulative usage and the quota delta', () => 
     { type: 'event_msg', payload: { type: 'token_count', info: { total_token_usage: { input_tokens: 300, cached_input_tokens: 200, output_tokens: 9, reasoning_output_tokens: 1 }, last_token_usage: { input_tokens: 200 } }, rate_limits: { primary: { used_percent: 71.5 } } } },
   ].map((x) => JSON.stringify(x)).join('\n');
   assert.deepEqual(codexTranscriptMetrics(t, 150), { input: 300, cached: 200, output: 9, userTurns: 2, questionsAsked: 0, quotaUsedPct: 1.5, peakContext: 200, overBudgetRequests: 1 });
+});
+
+test('budgetFor: only budgeted stages, per-model override', () => {
+  const cfg = { contextBudget: { plan: 100000, review: 100000, byModel: { opus: 150000 } } };
+  assert.equal(budgetFor(cfg, 'review', 'sonnet'), 100000);
+  assert.equal(budgetFor(cfg, 'review', 'opus'), 150000);
+  assert.equal(budgetFor(cfg, 'implement', 'opus'), null);
+});
+
+test('contextVsOutcome buckets reviews, implementations and plans by peak context', () => {
+  const call = (ticket, phase, stage, peak, round = 0) => ({ run: 'r', epic: 7, ticket, type: 'stage_call', phase, stage, round, peakContext: peak, input: 0, cached: 0, output: 0 });
+  const events = [
+    call(1, 'red', 'implement', 30000), call(1, 'review', 'review', 40000),
+    { run: 'r', epic: 7, ticket: 1, type: 'review', round: 0, verdict: 'PASS', blocker: 0, major: 0 },
+    { run: 'r', epic: 7, ticket: 1, type: 'ticket_end', state: 'ready-for-qa', rounds: 1 },
+    call(2, 'red', 'implement', 120000), call(2, 'test-fix', 'implement', 125000), call(2, 'review', 'review', 130000),
+    { run: 'r', epic: 7, ticket: 2, type: 'review', round: 0, verdict: 'CHANGES', blocker: 1, major: 1 },
+    { run: 'r', epic: 7, ticket: 2, type: 'ticket_end', state: 'needs-human', rounds: 3 },
+    { type: 'plan_session', planId: 'p', peakContext: 90000, input: 1, cached: 0, output: 1 },
+    { type: 'plan_published', planId: 'p', epic: 7, tickets: 2 },
+  ];
+  const c = summarize(events).contextVsOutcome;
+  assert.deepEqual(c.review, [{ bucket: '<50k', n: 1, passRate: '100%', seriousFindingsPerReview: '0.00' }, { bucket: '100-150k', n: 1, passRate: '0%', seriousFindingsPerReview: '2.00' }]);
+  assert.deepEqual(c.implement.map((r) => [r.bucket, r.firstRoundPass, r.testFixRetriesPerTicket]), [['<50k', '100%', '0.00'], ['100-150k', '0%', '1.00']]);
+  assert.deepEqual(c.plan, [{ bucket: '50-100k', n: 1, tickets: 2, downstreamFirstRoundPass: '50%', blockedTickets: 0 }]);
 });
 
 test('pool never exceeds its limit and keeps result order', async () => {

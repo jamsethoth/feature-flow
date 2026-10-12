@@ -23,7 +23,7 @@
       "disablePlugins": ["computer-use@openai-bundled", "unified-computer-use@openai-bundled", "browser@openai-bundled", "chrome@openai-bundled", "codex-app-tools@openai-bundled"]
     }
   },
-  "contextBudget": { "plan": 100000, "review": 100000, "escalate": 100000 },
+  "contextBudget": { "plan": 100000, "review": 100000, "escalate": 100000, "byModel": {} },
   "apiPrices": {
     "gpt-6.1-sol": { "input": 2.0, "cachedInput": 0.1, "cacheWrite": 2.5, "output": 10.0, "source": "https://developers.openai.com/api/docs/pricing" }
   },

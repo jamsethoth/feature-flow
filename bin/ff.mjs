@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { readFileSync, existsSync, mkdirSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { loadConfig, loadPersona, loadCommands, loadSkillText, STAGES } from '../lib/config.mjs';
+import { loadConfig, loadPersona, loadCommands, loadSkillText, budgetFor, STAGES } from '../lib/config.mjs';
 import { run } from '../lib/exec.mjs';
 import { interactiveArgs } from '../lib/adapters.mjs';
 import { repoInfo } from '../lib/git.mjs';
@@ -94,7 +94,7 @@ async function plan(words) {
   // The marker lets `ff publish`, run from inside the session, tag the epic with this planId.
   writePlanMarker(dir, { planId, started });
   const opening = `Start the feature-flow planning procedure for the repo at ${root}. planApproval is ${cfg.planApproval}.\nFeature request: ${words.join(' ') || '(ask me for it)'}${skillsBlock(cfg.stageSkills?.plan)}`;
-  const budget = cfg.contextBudget?.plan ?? Infinity;
+  const budget = budgetFor(cfg, 'plan', cfg.plan.model) ?? Infinity;
   const [cmd, args] = interactiveArgs(cfg.plan, persona, opening, cfg.plan.cli === 'claude' ? planId : undefined, Number.isFinite(budget) ? budget : undefined);
   const code = (await run(cmd, args, { cwd: process.cwd(), inherit: true, allowFail: true })).code;
   const metrics = cfg.plan.cli === 'claude' ? claudePlanMetrics(planId, budget) : codexPlanMetrics(process.cwd(), started, budget);

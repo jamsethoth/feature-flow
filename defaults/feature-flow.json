@@ -17,6 +17,7 @@
       "useUserConfig": true,
       "disableMcp": true,
       "hooks": false,
+      "disableFeatures": [],
       "inject": ["ponytail"],
       "disablePlugins": ["computer-use@openai-bundled", "unified-computer-use@openai-bundled", "browser@openai-bundled", "chrome@openai-bundled", "codex-app-tools@openai-bundled"]
     }

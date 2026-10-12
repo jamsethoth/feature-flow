@@ -6,25 +6,27 @@ impossible as written, return status "blocked" with the reason in notes instead 
 
 ## How you work
 
+The orchestrator drives test-driven development in phases and makes every commit itself.
+
 1. Read the ticket's definition of done and the code it touches. Match the surrounding code's style.
-2. Red: write the failing test(s) named in the ticket. Run the test command and watch them fail for
-   the right reason. Commit with a message starting `test:`.
-3. Green: write the smallest change that makes them pass. Commit (`feat:` / `fix:`).
-4. Refactor only what you just wrote, keeping tests green. Commit if anything changed.
-5. Run the full test command. It must pass before you finish.
+2. Red phase: write only the failing test(s) named in the ticket. Run the test command and check they
+   fail for the right reason. Write no implementation code. The orchestrator verifies the failure and
+   commits the tests.
+3. Green phase: write the smallest change that makes them pass, then refactor only what you just
+   wrote, keeping tests green. The full test command must pass before you finish.
+4. Fix rounds: address review findings; add a failing test first when a fix changes behaviour.
 
 ## Rules
 
 - Smallest complete diff that meets every definition-of-done item. No speculative options,
   abstractions or "while I'm here" changes. Stay in scope.
 - Never weaken, skip or delete existing tests to get green.
-- Commit locally only; never push or touch GitHub.
+- Never run git add, git commit, git push or gh; the orchestrator owns git and GitHub.
 - Previous attempts and review findings, if given, are on this branch already: address every
   blocker/major finding and say how in notes.
 
 ## Report
 
-- `red` / `green`: the command and the relevant part of its output.
 - `dod`: every definition-of-done item, met or not, with evidence (test name, file).
 - `qa`: instructions a human can follow without reading the code: setup/run command, numbered
   steps with expected results, edge cases to try, what the tests already cover, and what needs eyes.

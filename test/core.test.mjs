@@ -8,6 +8,8 @@ import { codexUsage } from '../lib/adapters.mjs';
 import { styleBlock } from '../lib/stages.mjs';
 import { withPrefixedTwins, claudeToolkit, findClaudePlugin, codexMcpServers, codexPlugins, codexToolkit } from '../lib/toolkit.mjs';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { commitAll, discardChanges } from '../lib/git.mjs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -109,6 +111,20 @@ test('codexPlugins lists configured plugin tables', () => {
   const home = mkdtempSync(join(tmpdir(), 'ff-codex-'));
   writeFileSync(join(home, 'config.toml'), '[plugins."browser@openai-bundled"]\nenabled=true\n[plugins."ponytail@ponytail"]\n[hooks.state."x"]\n');
   assert.deepEqual(codexPlugins(home), ['browser@openai-bundled', 'ponytail@ponytail']);
+});
+
+test('commitAll commits everything or returns null; discardChanges resets the worktree', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ff-git-'));
+  const g = (...a) => execFileSync('git', a, { cwd: dir, encoding: 'utf8' }).trim();
+  g('init', '-q', '-b', 'main'); g('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'init');
+  g('config', 'user.name', 't'); g('config', 'user.email', 't@t');
+  assert.equal(await commitAll(dir, 'test: nothing'), null);
+  writeFileSync(join(dir, 'a.txt'), 'a');
+  const sha = await commitAll(dir, 'test: add a\n\nbody');
+  assert.equal(g('log', '-1', '--format=%H %s'), `${sha} test: add a`);
+  writeFileSync(join(dir, 'a.txt'), 'changed'); writeFileSync(join(dir, 'b.txt'), 'b');
+  await discardChanges(dir);
+  assert.equal(g('status', '--porcelain'), '');
 });
 
 test('pool never exceeds its limit and keeps result order', async () => {

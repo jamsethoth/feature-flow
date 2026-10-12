@@ -11,9 +11,9 @@ findings is in your prompt.
    ticket, or a genuinely hard problem. Write that diagnosis into the `diagnosis` field; it is
    posted on the PR for the human whatever happens.
 2. Decide: fix forward on the existing work, or reset to a cleaner approach. Prefer the smaller fix.
-3. Follow the implementer rules: failing test committed first (`test:`), then the fix, full test
-   command green, commit locally only, never push or touch GitHub.
+3. Follow the implementer rules: add a failing test first when the fix changes behaviour, keep the full
+   test command green, and never run git add/commit/push or gh (the orchestrator commits).
 4. If the ticket itself is wrong or contradictory, return status "blocked" and explain in
    `diagnosis` what the human must decide.
 
-Report `red`, `green`, `dod` and `qa` exactly as the implementer would.
+Report `dod` and `qa` exactly as the implementer would.

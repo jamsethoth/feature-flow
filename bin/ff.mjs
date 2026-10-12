@@ -6,6 +6,7 @@ import { run } from '../lib/exec.mjs';
 import { interactiveArgs } from '../lib/adapters.mjs';
 import { repoInfo } from '../lib/git.mjs';
 import { runEpic, codexDesktopLock, CODEX_LOCK_WARNING } from '../lib/run.mjs';
+import { claudeToolkit, codexMcpServers, skillsBlock } from '../lib/toolkit.mjs';
 import { publishPlan } from '../lib/publish.mjs';
 import * as gh from '../lib/github.mjs';
 
@@ -39,6 +40,12 @@ async function doctor() {
   if (clis.has('claude')) await check('claude', async () => (await run('claude', ['--version'])).stdout.trim());
   if (clis.has('codex')) await check('codex login', async () => { const r = await run('codex', ['login', 'status']); return (r.stdout + r.stderr).trim(); });
   if (clis.has('codex')) checks.push(['codex sandbox free', ...(await codexDesktopLock() ? ['WARN', CODEX_LOCK_WARNING] : ['ok', 'no Codex desktop lock'])]);
+  if (clis.has('claude') && cfg) await check('claude toolkit', async () => {
+    const tk = claudeToolkit(cfg.toolkit?.claude);
+    if (tk.missing.length) throw new Error(`not found: ${tk.missing.join(', ')}`);
+    return [...(cfg.toolkit?.claude?.hooks ?? []), ...(cfg.toolkit?.claude?.plugins ?? [])].join(', ') || 'none';
+  });
+  if (clis.has('codex') && cfg?.toolkit?.codex?.disableMcp) checks.push(['codex MCP off', 'ok', codexMcpServers().join(', ') || 'none configured']);
   if (cfg?.style?.internal?.startsWith('caveman')) await check('caveman skill', async () => { if (!loadSkillText('caveman')) throw new Error('style.internal is caveman but no caveman skill in ~/.agents/skills or ~/.claude/skills'); return 'found'; });
   if (cfg) for (const s of STAGES) await check(`persona ${cfg[s].persona}`, async () => loadPersona(cfg[s].persona, await repoRoot().catch(() => null)).path);
   for (const [name, status, detail] of checks) console.log(`${status.padEnd(4)} ${name.padEnd(22)} ${detail}`);
@@ -63,7 +70,7 @@ async function plan(words) {
   const root = await repoRoot();
   const cfg = loadConfig(root);
   const persona = loadPersona(cfg.plan.persona, root);
-  const opening = `Start the feature-flow planning procedure for the repo at ${root}. planApproval is ${cfg.planApproval}.\nFeature request: ${words.join(' ') || '(ask me for it)'}`;
+  const opening = `Start the feature-flow planning procedure for the repo at ${root}. planApproval is ${cfg.planApproval}.\nFeature request: ${words.join(' ') || '(ask me for it)'}${skillsBlock(cfg.stageSkills?.plan)}`;
   const [cmd, args] = interactiveArgs(cfg.plan, persona, opening);
   return (await run(cmd, args, { cwd: process.cwd(), inherit: true, allowFail: true })).code;
 }

@@ -10,5 +10,15 @@
   "baseBranch": "main",
   "worktreeRoot": "~/worktrees",
   "allowNetwork": false,
-  "style": { "internal": "none" }
+  "style": { "internal": "none" },
+  "toolkit": {
+    "claude": { "hooks": ["rtk"], "plugins": ["ponytail", "mattpocock-skills"] },
+    "codex": { "useUserConfig": true, "disableMcp": true }
+  },
+  "stageSkills": {
+    "plan": ["grilling", "to-tickets", "writing-for-agents"],
+    "implement": ["tdd"],
+    "review": ["code-review"],
+    "escalate": ["diagnosing-bugs", "tdd"]
+  }
 }

@@ -6,6 +6,10 @@ import { isReady } from '../lib/github.mjs';
 import { stageForRound, pool } from '../lib/run.mjs';
 import { codexUsage } from '../lib/adapters.mjs';
 import { styleBlock } from '../lib/stages.mjs';
+import { withPrefixedTwins, claudeToolkit, findClaudePlugin, codexMcpServers } from '../lib/toolkit.mjs';
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 
 test('mergeConfig merges stage objects key by key, later layers win', () => {
   const out = mergeConfig({ implement: { cli: 'claude', model: 'sonnet' }, maxParallel: 2 }, { implement: { model: 'opus' }, maxParallel: 1 });
@@ -58,6 +62,40 @@ test('styleBlock: caveman only for agent-facing prose, human fields stay natural
   assert.match(s, /\*\*ultra\*\*/);
   assert.match(s, /RULES/);
   assert.match(s, /never caveman/);
+});
+
+test('withPrefixedTwins adds rewritten forms of Bash rules only', () => {
+  assert.deepEqual(withPrefixedTwins(['Read', 'Bash(git commit:*)'], ['rtk ']), ['Read', 'Bash(git commit:*)', 'Bash(rtk git commit:*)']);
+  assert.deepEqual(withPrefixedTwins(['Bash(x)'], []), ['Bash(x)']);
+});
+
+test('claudeToolkit builds the rtk hook settings and reports unknown entries', () => {
+  const tk = claudeToolkit({ hooks: ['rtk', 'nope'], plugins: [] });
+  assert.equal(tk.args[0], '--settings');
+  assert.match(tk.args[1], /rtk hook claude/);
+  assert.deepEqual(tk.prefixes, ['rtk ']);
+  assert.deepEqual(tk.missing, ['hook nope (unknown)']);
+  assert.deepEqual(claudeToolkit(undefined), { args: [], prefixes: [], missing: [] });
+});
+
+test('findClaudePlugin resolves installed and nested synced plugins', () => {
+  const home = mkdtempSync(join(tmpdir(), 'ff-home-'));
+  const inst = join(home, 'cache', 'a');
+  mkdirSync(inst, { recursive: true });
+  mkdirSync(join(home, 'plugins'), { recursive: true });
+  writeFileSync(join(home, 'plugins', 'installed_plugins.json'), JSON.stringify({ plugins: { 'alpha@mkt': [{ installPath: inst }] } }));
+  const synced = join(home, 'plugins', 'synced', 'acct', 'uuid', '.claude-plugin');
+  mkdirSync(synced, { recursive: true });
+  writeFileSync(join(synced, 'plugin.json'), JSON.stringify({ name: 'beta' }));
+  assert.equal(findClaudePlugin('alpha', home), inst);
+  assert.equal(findClaudePlugin('beta', home), join(home, 'plugins', 'synced', 'acct', 'uuid'));
+  assert.equal(findClaudePlugin('gamma', home), null);
+});
+
+test('codexMcpServers lists top-level server tables only', () => {
+  const home = mkdtempSync(join(tmpdir(), 'ff-codex-'));
+  writeFileSync(join(home, 'config.toml'), '[mcp_servers.playwright]\nargs=[]\n[mcp_servers.node_repl.env]\nX=1\n[mcp_servers.serena]\n[projects."/x"]\n');
+  assert.deepEqual(codexMcpServers(home), ['playwright', 'serena']);
 });
 
 test('pool never exceeds its limit and keeps result order', async () => {

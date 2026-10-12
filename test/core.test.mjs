@@ -27,7 +27,7 @@ test('plugin defaults load and every persona resolves', () => {
 });
 
 test('parseCommands reads the ## Commands section only', () => {
-  const md = '# Repo\n- test: `nope`\n\n## Commands\n\n- test: `npm test`\n* Lint: `npm run lint`\n\n## Other\n- run: `x`\n';
+  const md = '# Repo\n- test: `nope`\n\n## Commands\n\n- test: `npm test`\n* Lint: `npm run lint`\n- run: `TODO`\n\n## Other\n- run: `x`\n';
   assert.deepEqual(parseCommands(md), { test: 'npm test', lint: 'npm run lint' });
 });
 

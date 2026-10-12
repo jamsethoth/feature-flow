@@ -80,6 +80,7 @@ Layers, later wins: `defaults/feature-flow.json` (this package) → `~/.agents/f
 | `baseBranch` | `main` | PR base |
 | `worktreeRoot` | `~/worktrees` | ticket worktrees at `<root>/<repo>/ticket-<n>` |
 | `allowNetwork` | `false` | let implementation agents use the network |
+| `style.internal` | `none` | `caveman-lite\|full\|ultra`: compress agent-only prose with the shared `caveman` skill; human-facing text stays natural. Measured on the sandbox (2 runs per arm): no output savings and about 25% more input tokens, so it is off by default |
 
 Personas live in `personas/<name>.md`; a file of the same name in `~/.agents/feature-flow/personas/` or
 `<repo>/.agents/feature-flow/personas/` replaces it. Point a stage at a new persona (e.g.

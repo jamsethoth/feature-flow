@@ -1,0 +1,16 @@
+{
+  "name": "feature-flow",
+  "version": "0.1.0",
+  "description": "Plan -> vertical-slice tickets -> TDD implementation -> cross-model review -> human QA, with any CLI/model per stage",
+  "type": "module",
+  "license": "AGPL-3.0-or-later",
+  "bin": {
+    "feature-flow": "bin/ff.mjs",
+    "ff": "bin/ff.mjs"
+  },
+  "files": ["bin", "lib", "defaults", "personas"],
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "test": "node --test"
+  }
+}

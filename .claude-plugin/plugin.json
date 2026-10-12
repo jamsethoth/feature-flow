@@ -1,0 +1,8 @@
+{
+  "name": "feature-flow",
+  "version": "0.1.0",
+  "description": "Plan -> vertical-slice tickets -> TDD implementation -> cross-model review -> human QA. Skills wrap the `ff` CLI (npm install -g github:jamsethoth/feature-flow).",
+  "author": { "name": "jamsethoth" },
+  "repository": "https://github.com/jamsethoth/feature-flow",
+  "license": "AGPL-3.0-or-later"
+}

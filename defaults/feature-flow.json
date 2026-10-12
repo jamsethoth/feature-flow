@@ -1,0 +1,13 @@
+{
+  "plan":      { "cli": "claude", "model": "opus",        "effort": "high",   "persona": "planner" },
+  "implement": { "cli": "claude", "model": "sonnet",      "effort": "medium", "persona": "implementer" },
+  "review":    { "cli": "codex",  "model": "gpt-6.1-sol", "effort": "medium", "persona": "reviewer" },
+  "escalate":  { "cli": "claude", "model": "opus",        "effort": "high",   "persona": "escalator" },
+  "planApproval": true,
+  "escalationEnabled": false,
+  "maxParallel": 2,
+  "maxReviewRounds": 2,
+  "baseBranch": "main",
+  "worktreeRoot": "~/worktrees",
+  "allowNetwork": false
+}

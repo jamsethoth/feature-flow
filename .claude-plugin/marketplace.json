@@ -1,0 +1,11 @@
+{
+  "name": "feature-flow",
+  "owner": { "name": "jamsethoth" },
+  "plugins": [
+    {
+      "name": "feature-flow",
+      "source": "./",
+      "description": "Plan -> tickets -> TDD -> cross-model review -> human QA workflow"
+    }
+  ]
+}

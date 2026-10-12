@@ -19,6 +19,8 @@ const USAGE = `feature-flow (ff)
   ff doctor               check this machine
   ff init                 set up the current repo (labels, overrides dir, AGENTS.md commands)
   ff plan [feature...]    start the planner interactively (plan.cli/model/effort/persona)
+  ff plan --bg [feature...]   start it as a Claude Code background session (open via agent view)
+  ff plan --finish [planId]   record a background planning session's metrics
   ff publish <plan.json>  create the epic + ticket issues from a planner's plan file
   ff approve <epic#>      add the plan-approved label
   ff run <epic#>          implement, review and hand off all ready tickets
@@ -82,22 +84,10 @@ async function init() {
   return 0;
 }
 
-async function plan(words) {
-  const info = await repoInfo(process.cwd());
-  const root = info.mainRoot;
-  const cfg = loadConfig(root);
-  const persona = loadPersona(cfg.plan.persona, root);
-  const dir = join(info.gitCommonDir, 'feature-flow');
-  const ev = eventLog(dir);
-  const planId = randomUUID();
-  const started = Date.now();
-  // The marker lets `ff publish`, run from inside the session, tag the epic with this planId.
-  writePlanMarker(dir, { planId, started });
-  const opening = `Start the feature-flow planning procedure for the repo at ${root}. planApproval is ${cfg.planApproval}.\nFeature request: ${words.join(' ') || '(ask me for it)'}${skillsBlock(cfg.stageSkills?.plan)}`;
+// Record a finished planning session's metrics (and a budget warning) from its transcript.
+function recordPlanSession({ ev, dir, cfg, persona, planId, started, cwd }) {
   const budget = budgetFor(cfg, 'plan', cfg.plan.model) ?? Infinity;
-  const [cmd, args] = interactiveArgs(cfg.plan, persona, opening, cfg.plan.cli === 'claude' ? planId : undefined, Number.isFinite(budget) ? budget : undefined);
-  const code = (await run(cmd, args, { cwd: process.cwd(), inherit: true, allowFail: true })).code;
-  const metrics = cfg.plan.cli === 'claude' ? claudePlanMetrics(planId, budget) : codexPlanMetrics(process.cwd(), started, budget);
+  const metrics = cfg.plan.cli === 'claude' ? claudePlanMetrics(planId, budget) : codexPlanMetrics(cwd, started, budget);
   ev('plan_session', { planId, cli: cfg.plan.cli, model: cfg.plan.model, effort: cfg.plan.effort, persona: persona.name, personaHash: persona.hash,
     durationMs: Date.now() - started, contextBudget: Number.isFinite(budget) ? budget : null, ...(metrics ?? { metrics: 'transcript not found' }) });
   if (metrics?.overBudgetRequests) {
@@ -105,6 +95,50 @@ async function plan(words) {
     console.log(`WARNING planning peaked at ${metrics.peakContext} tokens of context (${metrics.overBudgetRequests} request(s) over the ${budget}-token budget); reasoning quality may have degraded.`);
   }
   clearPlanMarker(dir);
+  return metrics;
+}
+
+async function plan(args) {
+  const o = parseOpts(args);
+  const info = await repoInfo(process.cwd());
+  const root = info.mainRoot;
+  const cfg = loadConfig(root);
+  const persona = loadPersona(cfg.plan.persona, root);
+  const dir = join(info.gitCommonDir, 'feature-flow');
+  mkdirSync(dir, { recursive: true });
+  const ev = eventLog(dir);
+
+  if (o.finish) {
+    // Background sessions return immediately, so their metrics are recorded once the user is done.
+    const marker = readPlanMarker(dir);
+    const planId = typeof o.finish === 'string' ? o.finish : marker?.planId;
+    if (!planId) throw new Error('no planning session to finish (pass the planId)');
+    const m = recordPlanSession({ ev, dir, cfg, persona, planId, started: marker?.planId === planId ? marker.started : Date.now(), cwd: root });
+    console.log(JSON.stringify({ planId, ...(m ?? { metrics: 'transcript not found' }) }));
+    return 0;
+  }
+
+  const planId = randomUUID();
+  const started = Date.now();
+  // The marker lets `ff publish`, run from inside the session, tag the epic with this planId.
+  writePlanMarker(dir, { planId, started, background: Boolean(o.bg) });
+  const opening = `Start the feature-flow planning procedure for the repo at ${root}. planApproval is ${cfg.planApproval}.\nFeature request: ${o._.join(' ') || '(ask me for it)'}${skillsBlock(cfg.stageSkills?.plan)}`;
+  const budget = budgetFor(cfg, 'plan', cfg.plan.model) ?? Infinity;
+  const [cmd, cliArgs] = interactiveArgs(cfg.plan, persona, opening, cfg.plan.cli === 'claude' ? planId : undefined, Number.isFinite(budget) ? budget : undefined);
+
+  if (o.bg) {
+    if (cfg.plan.cli !== 'claude') throw new Error('--bg needs plan.cli = claude (Claude Code background sessions)');
+    // A background Claude session: open it from Claude Code's agent view (left arrow on an empty prompt).
+    const r = await run(cmd, ['--bg', '--name', `ff plan: ${info.name}`, ...cliArgs], { cwd: root, allowFail: true });
+    if (r.code !== 0) { clearPlanMarker(dir); throw new Error(`claude --bg failed:\n${r.stderr || r.stdout}`); }
+    ev('plan_started', { planId, cli: cfg.plan.cli, model: cfg.plan.model, effort: cfg.plan.effort, background: true });
+    console.log(JSON.stringify({ planId, session: (r.stdout || '').trim().split('\n').at(-1) }));
+    console.log(`Planner running in the background as "ff plan: ${info.name}". Open it from Claude Code's agent view; when done: ff plan --finish ${planId}`);
+    return 0;
+  }
+
+  const code = (await run(cmd, cliArgs, { cwd: process.cwd(), inherit: true, allowFail: true })).code;
+  recordPlanSession({ ev, dir, cfg, persona, planId, started, cwd: process.cwd() });
   return code;
 }
 

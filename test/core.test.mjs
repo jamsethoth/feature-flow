@@ -10,6 +10,7 @@ import { withPrefixedTwins, claudeToolkit, findClaudePlugin, codexMcpServers, co
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { commitAll, discardChanges } from '../lib/git.mjs';
+import { parseOpts } from '../lib/opts.mjs';
 import { diffStats, severityCounts } from '../lib/events.mjs';
 import { summarize, renderSummary } from '../lib/stats.mjs';
 import { planShape, claudeTranscriptMetrics, codexTranscriptMetrics, lastRequestContext } from '../lib/planmetrics.mjs';
@@ -265,6 +266,12 @@ test('claudeTrusted reads (never writes) Claude Code folder trust', () => {
   assert.equal(grantClaudeTrust('c:\\dev\\b', home), true);
   const after = JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8'));
   assert.deepEqual(after, { numStartups: 3, projects: { 'C:/Dev/B': { allowedTools: ['x'], hasTrustDialogAccepted: true } } });
+});
+
+test('parseOpts: boolean flags never swallow the next argument', () => {
+  assert.deepEqual(parseOpts(['--bg', 'Plan the feature']), { _: ['Plan the feature'], bg: true });
+  assert.deepEqual(parseOpts(['--finish', 'abc', '--session', 'xyz']), { _: [], finish: 'abc', session: 'xyz' });
+  assert.deepEqual(parseOpts(['42', '--refresh', '--label', 'A']), { _: ['42'], refresh: true, label: 'A' });
 });
 
 test('pool never exceeds its limit and keeps result order', async () => {

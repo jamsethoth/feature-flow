@@ -12,6 +12,7 @@ import { summarize, renderSummary, refreshOutcomes } from '../lib/stats.mjs';
 import { runEval } from '../lib/eval.mjs';
 import { writePlanMarker, readPlanMarker, clearPlanMarker, claudePlanMetrics, codexPlanMetrics, planShape } from '../lib/planmetrics.mjs';
 import { randomUUID } from 'node:crypto';
+import { parseOpts } from '../lib/opts.mjs';
 import { publishPlan } from '../lib/publish.mjs';
 import * as gh from '../lib/github.mjs';
 
@@ -188,18 +189,6 @@ async function runCmd(epic) {
   console.log('\nticket  state          pr');
   for (const r of results) console.log(`#${String(r.ticket).padEnd(6)} ${r.state.padEnd(14)} ${r.pr ?? r.error ?? ''}`);
   return results.some((r) => r.state === 'needs-human') ? 2 : 0;
-}
-
-// --name value / --flag parsing for the few commands that take options.
-function parseOpts(args) {
-  const opts = { _: [] };
-  for (let i = 0; i < args.length; i++) {
-    const m = /^--([\w-]+)$/.exec(args[i]);
-    if (!m) opts._.push(args[i]);
-    else if (args[i + 1] !== undefined && !args[i + 1].startsWith('--')) opts[m[1]] = args[++i];
-    else opts[m[1]] = true;
-  }
-  return opts;
 }
 
 async function stats(args) {

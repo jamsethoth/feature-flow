@@ -94,9 +94,9 @@ async function plan(words) {
   // The marker lets `ff publish`, run from inside the session, tag the epic with this planId.
   writePlanMarker(dir, { planId, started });
   const opening = `Start the feature-flow planning procedure for the repo at ${root}. planApproval is ${cfg.planApproval}.\nFeature request: ${words.join(' ') || '(ask me for it)'}${skillsBlock(cfg.stageSkills?.plan)}`;
-  const [cmd, args] = interactiveArgs(cfg.plan, persona, opening, cfg.plan.cli === 'claude' ? planId : undefined);
-  const code = (await run(cmd, args, { cwd: process.cwd(), inherit: true, allowFail: true })).code;
   const budget = cfg.contextBudget?.plan ?? Infinity;
+  const [cmd, args] = interactiveArgs(cfg.plan, persona, opening, cfg.plan.cli === 'claude' ? planId : undefined, Number.isFinite(budget) ? budget : undefined);
+  const code = (await run(cmd, args, { cwd: process.cwd(), inherit: true, allowFail: true })).code;
   const metrics = cfg.plan.cli === 'claude' ? claudePlanMetrics(planId, budget) : codexPlanMetrics(process.cwd(), started, budget);
   ev('plan_session', { planId, cli: cfg.plan.cli, model: cfg.plan.model, effort: cfg.plan.effort, persona: persona.name, personaHash: persona.hash,
     durationMs: Date.now() - started, contextBudget: Number.isFinite(budget) ? budget : null, ...(metrics ?? { metrics: 'transcript not found' }) });

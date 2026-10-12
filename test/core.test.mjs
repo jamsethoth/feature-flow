@@ -12,7 +12,7 @@ import { execFileSync } from 'node:child_process';
 import { commitAll, discardChanges } from '../lib/git.mjs';
 import { diffStats, severityCounts } from '../lib/events.mjs';
 import { summarize, renderSummary } from '../lib/stats.mjs';
-import { planShape, claudeTranscriptMetrics, codexTranscriptMetrics } from '../lib/planmetrics.mjs';
+import { planShape, claudeTranscriptMetrics, codexTranscriptMetrics, lastRequestContext } from '../lib/planmetrics.mjs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -206,6 +206,16 @@ test('claudeTranscriptMetrics counts usage once per message and only real user t
   ].map((x) => JSON.stringify(x)).join('\n');
   assert.deepEqual(claudeTranscriptMetrics(t), { input: 115, cached: 100, output: 7, userTurns: 2, questionsAsked: 0, peakContext: 115, overBudgetRequests: 0 });
   assert.equal(claudeTranscriptMetrics(t, 100).overBudgetRequests, 1);
+});
+
+test('lastRequestContext reads the latest assistant request size', () => {
+  const t = [
+    { type: 'assistant', message: { id: 'a', usage: { input_tokens: 5, cache_read_input_tokens: 1000, cache_creation_input_tokens: 0 } } },
+    { type: 'user', message: { content: 'x' } },
+    { type: 'assistant', message: { id: 'b', usage: { input_tokens: 10, cache_read_input_tokens: 150000, cache_creation_input_tokens: 2000 } } },
+  ].map((x) => JSON.stringify(x)).join('\n');
+  assert.equal(lastRequestContext(t), 152010);
+  assert.equal(lastRequestContext(''), 0);
 });
 
 test('codexTranscriptMetrics takes cumulative usage and the quota delta', () => {

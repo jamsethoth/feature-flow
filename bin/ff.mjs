@@ -96,9 +96,14 @@ async function plan(words) {
   const opening = `Start the feature-flow planning procedure for the repo at ${root}. planApproval is ${cfg.planApproval}.\nFeature request: ${words.join(' ') || '(ask me for it)'}${skillsBlock(cfg.stageSkills?.plan)}`;
   const [cmd, args] = interactiveArgs(cfg.plan, persona, opening, cfg.plan.cli === 'claude' ? planId : undefined);
   const code = (await run(cmd, args, { cwd: process.cwd(), inherit: true, allowFail: true })).code;
-  const metrics = cfg.plan.cli === 'claude' ? claudePlanMetrics(planId) : codexPlanMetrics(process.cwd(), started);
+  const budget = cfg.contextBudget?.plan ?? Infinity;
+  const metrics = cfg.plan.cli === 'claude' ? claudePlanMetrics(planId, budget) : codexPlanMetrics(process.cwd(), started, budget);
   ev('plan_session', { planId, cli: cfg.plan.cli, model: cfg.plan.model, effort: cfg.plan.effort, persona: persona.name, personaHash: persona.hash,
-    durationMs: Date.now() - started, ...(metrics ?? { metrics: 'transcript not found' }) });
+    durationMs: Date.now() - started, contextBudget: Number.isFinite(budget) ? budget : null, ...(metrics ?? { metrics: 'transcript not found' }) });
+  if (metrics?.overBudgetRequests) {
+    ev('context_budget_exceeded', { stage: 'plan', planId, peakContext: metrics.peakContext, budget, requests: metrics.overBudgetRequests });
+    console.log(`WARNING planning peaked at ${metrics.peakContext} tokens of context (${metrics.overBudgetRequests} request(s) over the ${budget}-token budget); reasoning quality may have degraded.`);
+  }
   clearPlanMarker(dir);
   return code;
 }

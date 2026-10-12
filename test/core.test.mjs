@@ -204,17 +204,18 @@ test('claudeTranscriptMetrics counts usage once per message and only real user t
     { type: 'user', isMeta: true, message: { content: 'reminder' } },
     { type: 'user', message: { content: [{ type: 'text', text: 'yes' }] } },
   ].map((x) => JSON.stringify(x)).join('\n');
-  assert.deepEqual(claudeTranscriptMetrics(t), { input: 115, cached: 100, output: 7, userTurns: 2, questionsAsked: 0 });
+  assert.deepEqual(claudeTranscriptMetrics(t), { input: 115, cached: 100, output: 7, userTurns: 2, questionsAsked: 0, peakContext: 115, overBudgetRequests: 0 });
+  assert.equal(claudeTranscriptMetrics(t, 100).overBudgetRequests, 1);
 });
 
 test('codexTranscriptMetrics takes cumulative usage and the quota delta', () => {
   const t = [
     { type: 'event_msg', payload: { type: 'user_message' } },
-    { type: 'event_msg', payload: { type: 'token_count', info: { total_token_usage: { input_tokens: 100, cached_input_tokens: 40, output_tokens: 5, reasoning_output_tokens: 3 } }, rate_limits: { primary: { used_percent: 70 } } } },
+    { type: 'event_msg', payload: { type: 'token_count', info: { total_token_usage: { input_tokens: 100, cached_input_tokens: 40, output_tokens: 5, reasoning_output_tokens: 3 }, last_token_usage: { input_tokens: 100 } }, rate_limits: { primary: { used_percent: 70 } } } },
     { type: 'event_msg', payload: { type: 'user_message' } },
-    { type: 'event_msg', payload: { type: 'token_count', info: { total_token_usage: { input_tokens: 300, cached_input_tokens: 200, output_tokens: 9, reasoning_output_tokens: 1 } }, rate_limits: { primary: { used_percent: 71.5 } } } },
+    { type: 'event_msg', payload: { type: 'token_count', info: { total_token_usage: { input_tokens: 300, cached_input_tokens: 200, output_tokens: 9, reasoning_output_tokens: 1 }, last_token_usage: { input_tokens: 200 } }, rate_limits: { primary: { used_percent: 71.5 } } } },
   ].map((x) => JSON.stringify(x)).join('\n');
-  assert.deepEqual(codexTranscriptMetrics(t), { input: 300, cached: 200, output: 9, userTurns: 2, questionsAsked: 0, quotaUsedPct: 1.5 });
+  assert.deepEqual(codexTranscriptMetrics(t, 150), { input: 300, cached: 200, output: 9, userTurns: 2, questionsAsked: 0, quotaUsedPct: 1.5, peakContext: 200, overBudgetRequests: 1 });
 });
 
 test('pool never exceeds its limit and keeps result order', async () => {

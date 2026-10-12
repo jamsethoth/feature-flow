@@ -4,7 +4,7 @@ import { mergeConfig, parseCommands, loadConfig, loadPersona } from '../lib/conf
 import { topoSort } from '../lib/publish.mjs';
 import { isReady } from '../lib/github.mjs';
 import { stageForRound, pool } from '../lib/run.mjs';
-import { codexUsage, recordedSandbox } from '../lib/adapters.mjs';
+import { codexUsage, recordedSandbox, apiCost, lastQuotaPct } from '../lib/adapters.mjs';
 import { styleBlock } from '../lib/stages.mjs';
 import { withPrefixedTwins, claudeToolkit, findClaudePlugin, codexMcpServers, codexPlugins, codexToolkit } from '../lib/toolkit.mjs';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
@@ -53,11 +53,24 @@ test('stageForRound: first try, fix rounds, optional single escalation', () => {
   assert.deepEqual([2, 3, 4].map((r) => stageForRound(r, esc)), ['implement', 'escalate', null]);
 });
 
-test('codexUsage sums turn.completed events and counts reasoning as output', () => {
+test('codexUsage takes the last cumulative turn.completed and does not double-count reasoning', () => {
   const jsonl = ['{"type":"turn.started"}',
-    '{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":40,"output_tokens":5,"reasoning_output_tokens":7}}',
-    '{"type":"turn.completed","usage":{"input_tokens":10,"cached_input_tokens":0,"output_tokens":1}}'].join('\n');
-  assert.deepEqual(codexUsage(jsonl), { input: 110, cached: 40, output: 13, costUsd: null });
+    '{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":40,"output_tokens":5,"reasoning_output_tokens":3}}',
+    '{"type":"turn.completed","usage":{"input_tokens":150,"cached_input_tokens":60,"cache_write_input_tokens":10,"output_tokens":9,"reasoning_output_tokens":4}}'].join('\n');
+  assert.deepEqual(codexUsage(jsonl), { input: 150, cached: 60, cacheWrite: 10, output: 9 });
+});
+
+test('apiCost prices fresh, cached, cache-write and output tokens per 1M', () => {
+  const p = { input: 2, cachedInput: 0.1, cacheWrite: 2.5, output: 10 };
+  // fresh 1M x $2 + cached 1M x $0.1 + write 1M x $2.5 + output 1M x $10
+  assert.equal(apiCost({ input: 3e6, cached: 1e6, cacheWrite: 1e6, output: 1e6 }, p), 14.6);
+  assert.equal(apiCost({ input: 1, cached: 0, output: 0 }, undefined), null);
+});
+
+test('lastQuotaPct reads the latest primary used_percent from a rollout', () => {
+  const r = '{"payload":{"type":"token_count","rate_limits":{"limit_id":"codex","primary":{"used_percent":78.0,"window_minutes":10080}}}}\n{"payload":{"type":"token_count","rate_limits":{"limit_id":"codex","primary":{"used_percent":79.0,"window_minutes":10080}}}}';
+  assert.equal(lastQuotaPct(r), 79);
+  assert.equal(lastQuotaPct('{}'), null);
 });
 
 test('recordedSandbox reads the latest turn sandbox from a dated rollout file', () => {
@@ -168,7 +181,7 @@ test('summarize computes first-round pass, rounds, retries, per-stage means and 
   assert.equal(s.efficacy.prOutcomes.mergedWithoutHumanCommits, 1);
   assert.equal(s.efficiency.retries.testFix, 1);
   assert.equal(s.efficiency.meanTicketMinutes, '3.0');
-  assert.equal(s.efficiency.claudeApiEquivalentUsd, '3.00');
+  assert.equal(s.efficiency.apiEquivalentUsd, '3.00');
   assert.equal(s.efficiency.byStage['implement claude/sonnet/medium'].calls, 4);
   assert.match(renderSummary('A', s), /first-round PASS 50%/);
 });
@@ -201,7 +214,7 @@ test('codexTranscriptMetrics takes cumulative usage and the quota delta', () => 
     { type: 'event_msg', payload: { type: 'user_message' } },
     { type: 'event_msg', payload: { type: 'token_count', info: { total_token_usage: { input_tokens: 300, cached_input_tokens: 200, output_tokens: 9, reasoning_output_tokens: 1 } }, rate_limits: { primary: { used_percent: 71.5 } } } },
   ].map((x) => JSON.stringify(x)).join('\n');
-  assert.deepEqual(codexTranscriptMetrics(t), { input: 300, cached: 200, output: 10, userTurns: 2, questionsAsked: 0, quotaUsedPct: 1.5 });
+  assert.deepEqual(codexTranscriptMetrics(t), { input: 300, cached: 200, output: 9, userTurns: 2, questionsAsked: 0, quotaUsedPct: 1.5 });
 });
 
 test('pool never exceeds its limit and keeps result order', async () => {

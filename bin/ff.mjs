@@ -21,7 +21,8 @@ const USAGE = `feature-flow (ff)
                           --trust also accepts Claude Code workspace trust for it (needed by ff plan --bg)
   ff plan [feature...]    start the planner interactively (plan.cli/model/effort/persona)
   ff plan --bg [feature...]   start it as a Claude Code background session (open via agent view)
-  ff plan --finish [planId]   record a background planning session's metrics
+  ff plan --finish [planId] [--session <claude session id>]
+                              record a background planning session's metrics
   ff publish <plan.json>  create the epic + ticket issues from a planner's plan file
   ff approve <epic#>      add the plan-approved label
   ff run <epic#>          implement, review and hand off all ready tickets
@@ -97,10 +98,17 @@ async function init(args = []) {
   return 0;
 }
 
+// Full session id of a background session from its short id.
+async function bgSessionId(shortId) {
+  const { stdout } = await run('claude', ['agents', '--json', '--all'], { allowFail: true });
+  try { return JSON.parse(stdout).find((a) => a.id === shortId)?.sessionId ?? null; } catch { return null; }
+}
+
 // Record a finished planning session's metrics (and a budget warning) from its transcript.
-function recordPlanSession({ ev, dir, cfg, persona, planId, started, cwd }) {
+// `sessionId` is the Claude transcript id: the planId itself for foreground runs.
+function recordPlanSession({ ev, dir, cfg, persona, planId, sessionId = planId, started, cwd }) {
   const budget = budgetFor(cfg, 'plan', cfg.plan.model) ?? Infinity;
-  const metrics = cfg.plan.cli === 'claude' ? claudePlanMetrics(planId, budget) : codexPlanMetrics(cwd, started, budget);
+  const metrics = cfg.plan.cli === 'claude' ? claudePlanMetrics(sessionId, budget) : codexPlanMetrics(cwd, started, budget);
   ev('plan_session', { planId, cli: cfg.plan.cli, model: cfg.plan.model, effort: cfg.plan.effort, persona: persona.name, personaHash: persona.hash,
     durationMs: Date.now() - started, contextBudget: Number.isFinite(budget) ? budget : null, ...(metrics ?? { metrics: 'transcript not found' }) });
   if (metrics?.overBudgetRequests) {
@@ -126,7 +134,9 @@ async function plan(args) {
     const marker = readPlanMarker(dir);
     const planId = typeof o.finish === 'string' ? o.finish : marker?.planId;
     if (!planId) throw new Error('no planning session to finish (pass the planId)');
-    const m = recordPlanSession({ ev, dir, cfg, persona, planId, started: marker?.planId === planId ? marker.started : Date.now(), cwd: root });
+    const own = marker?.planId === planId ? marker : null;
+    const sessionId = typeof o.session === 'string' ? o.session : own?.sessionId ?? planId;
+    const m = recordPlanSession({ ev, dir, cfg, persona, planId, sessionId, started: own?.started ?? Date.now(), cwd: root });
     console.log(JSON.stringify({ planId, ...(m ?? { metrics: 'transcript not found' }) }));
     return 0;
   }
@@ -145,8 +155,12 @@ async function plan(args) {
     // A background Claude session: open it from Claude Code's agent view (left arrow on an empty prompt).
     const r = await run(cmd, ['--bg', '--name', `ff plan: ${info.name}`, ...cliArgs], { cwd: root, allowFail: true });
     if (r.code !== 0) { clearPlanMarker(dir); throw new Error(`claude --bg failed:\n${r.stderr || r.stdout}`); }
-    ev('plan_started', { planId, cli: cfg.plan.cli, model: cfg.plan.model, effort: cfg.plan.effort, background: true });
-    console.log(JSON.stringify({ planId, session: (r.stdout || '').trim().split('\n').at(-1) }));
+    // Background sessions get their own id (--session-id is not honoured with --bg), so record the real one.
+    const shortId = /claude (?:stop|attach|logs) ([0-9a-f]{6,})/.exec(r.stdout ?? '')?.[1] ?? null;
+    const sessionId = shortId ? await bgSessionId(shortId) : null;
+    writePlanMarker(dir, { planId, started, background: true, sessionId });
+    ev('plan_started', { planId, sessionId, cli: cfg.plan.cli, model: cfg.plan.model, effort: cfg.plan.effort, background: true });
+    console.log(JSON.stringify({ planId, sessionId, shortId }));
     console.log(`Planner running in the background as "ff plan: ${info.name}". Open it from Claude Code's agent view; when done: ff plan --finish ${planId}`);
     return 0;
   }

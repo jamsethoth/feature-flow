@@ -5,7 +5,7 @@ import { loadConfig, loadPersona, loadCommands, loadSkillText, STAGES } from '..
 import { run } from '../lib/exec.mjs';
 import { interactiveArgs } from '../lib/adapters.mjs';
 import { repoInfo } from '../lib/git.mjs';
-import { runEpic, codexDesktopLock, CODEX_LOCK_WARNING } from '../lib/run.mjs';
+import { runEpic, codexDesktopLock, codexSandboxRaces, CODEX_LOCK_WARNING } from '../lib/run.mjs';
 import { claudeToolkit, codexToolkit, codexMcpServers, skillsBlock } from '../lib/toolkit.mjs';
 import { publishPlan } from '../lib/publish.mjs';
 import * as gh from '../lib/github.mjs';
@@ -39,7 +39,9 @@ async function doctor() {
   const clis = new Set(cfg ? STAGES.map((s) => cfg[s].cli) : ['claude', 'codex']);
   if (clis.has('claude')) await check('claude', async () => (await run('claude', ['--version'])).stdout.trim());
   if (clis.has('codex')) await check('codex login', async () => { const r = await run('codex', ['login', 'status']); return (r.stdout + r.stderr).trim(); });
-  if (clis.has('codex')) checks.push(['codex sandbox free', ...(await codexDesktopLock() ? ['WARN', CODEX_LOCK_WARNING] : ['ok', 'no Codex desktop lock'])]);
+  if (clis.has('codex')) checks.push(['codex sandbox free', ...(!cfg || codexSandboxRaces(cfg)
+    ? (await codexDesktopLock() ? ['WARN', CODEX_LOCK_WARNING] : ['ok', 'no node_repl lock'])
+    : ['ok', `windowsSandbox=${cfg.toolkit.codex.windowsSandbox} (no node_repl race)`])]);
   if (clis.has('claude') && cfg) await check('claude toolkit', async () => {
     const tk = claudeToolkit(cfg.toolkit?.claude);
     if (tk.missing.length) throw new Error(`not found: ${tk.missing.join(', ')}`);

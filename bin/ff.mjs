@@ -7,6 +7,9 @@ import { interactiveArgs } from '../lib/adapters.mjs';
 import { repoInfo } from '../lib/git.mjs';
 import { runEpic, codexDesktopLock, codexSandboxRaces, CODEX_LOCK_WARNING } from '../lib/run.mjs';
 import { claudeToolkit, codexToolkit, codexMcpServers, skillsBlock } from '../lib/toolkit.mjs';
+import { eventLog, readEvents } from '../lib/events.mjs';
+import { summarize, renderSummary, refreshOutcomes } from '../lib/stats.mjs';
+import { runEval } from '../lib/eval.mjs';
 import { publishPlan } from '../lib/publish.mjs';
 import * as gh from '../lib/github.mjs';
 
@@ -17,6 +20,10 @@ const USAGE = `feature-flow (ff)
   ff publish <plan.json>  create the epic + ticket issues from a planner's plan file
   ff approve <epic#>      add the plan-approved label
   ff run <epic#>          implement, review and hand off all ready tickets
+  ff stats [epic] [--label L] [--by-label] [--refresh] [--json]
+                          efficacy/efficiency metrics from the event log; --refresh asks GitHub for PR outcomes
+  ff eval --plan <plan.json> --runs N --reset "<cmd>" <variant.json>...
+                          A/B the plan N times per config variant in a throwaway sandbox repo
   ff config               print the merged config
   ff persona <name>       print the effective persona text`;
 
@@ -98,9 +105,48 @@ async function runCmd(epic) {
   return results.some((r) => r.state === 'needs-human') ? 2 : 0;
 }
 
+// --name value / --flag parsing for the few commands that take options.
+function parseOpts(args) {
+  const opts = { _: [] };
+  for (let i = 0; i < args.length; i++) {
+    const m = /^--([\w-]+)$/.exec(args[i]);
+    if (!m) opts._.push(args[i]);
+    else if (args[i + 1] !== undefined && !args[i + 1].startsWith('--')) opts[m[1]] = args[++i];
+    else opts[m[1]] = true;
+  }
+  return opts;
+}
+
+async function stats(args) {
+  const o = parseOpts(args);
+  const info = await repoInfo(process.cwd());
+  const dir = join(info.gitCommonDir, 'feature-flow');
+  let events = readEvents(dir);
+  if (o.refresh) {
+    const n = await refreshOutcomes(events, info.mainRoot, eventLog(dir));
+    console.log(`refreshed ${n} PR outcome(s)`);
+    events = readEvents(dir);
+  }
+  const epic = o._[0] ? Number(o._[0]) : undefined;
+  const groups = o['by-label'] ? [...new Set(events.map((e) => e.label).filter(Boolean))] : [o.label];
+  for (const label of groups) {
+    const s = summarize(events, { epic, label });
+    console.log(o.json ? JSON.stringify({ label: label ?? null, epic: epic ?? null, ...s }, null, 2) : renderSummary(label ?? (epic ? `epic #${epic}` : 'all runs'), s));
+  }
+  return 0;
+}
+
+async function evalCmd(args) {
+  const o = parseOpts(args);
+  if (!o.plan || !o._.length) throw new Error('usage: ff eval --plan <plan.json> --runs N --reset "<cmd>" <variant.json>...');
+  await runEval({ planFile: o.plan, runs: Number(o.runs ?? 1), variantFiles: o._, resetCommand: o.reset ?? 'node eval/reset.mjs' });
+  return 0;
+}
+
 const [cmd, ...rest] = process.argv.slice(2);
 const commands = {
   doctor, init, plan: () => plan(rest), publish: () => publish(rest[0]), run: () => runCmd(rest[0]),
+  stats: () => stats(rest), eval: () => evalCmd(rest),
   approve: async () => { await gh.editLabels(rest[0], { add: ['plan-approved'] }, await repoRoot()); return 0; },
   config: async () => { console.log(JSON.stringify(loadConfig(await repoRoot().catch(() => null)), null, 2)); return 0; },
   persona: async () => { process.stdout.write(loadPersona(rest[0], await repoRoot().catch(() => null)).text); return 0; },

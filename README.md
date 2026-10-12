@@ -61,6 +61,34 @@ ff run 42                                      # repeat after merging PRs to unb
 `<git common dir>/feature-flow/<epic>.log`. Each PR carries the definition of done, red/green test
 evidence, QA instructions and a provenance table (CLI, model, effort, persona hash per stage).
 
+## Measure
+
+Every run appends to `<git common dir>/feature-flow/events.jsonl`: run start (with the stage configuration),
+each stage call (stage, phase, CLI/model/effort/persona, duration, tokens, Claude's API-equivalent cost),
+test gates, commits, reviews (verdict, findings by severity), blocked tickets and ticket end (state, rounds,
+duration, diff size). `ff stats` summarises it:
+
+```sh
+ff stats                 # all runs in this repo
+ff stats 42              # one epic
+ff stats --refresh       # first ask GitHub what happened to each PR (merged? human commits? time to merge)
+ff stats --by-label      # one summary per eval variant
+ff stats --json
+```
+
+Efficacy: ready-for-qa / needs-human rate, first-round PASS rate, mean rounds, blocked tickets, escalations,
+review findings, and after `--refresh`, PRs merged without human commits, closed unmerged, hours ready→merge.
+Efficiency: minutes and tokens per ticket, retries (still-green, test-fix, failed red phases), diff size and
+test share, per stage/model call counts, durations and tokens.
+
+To compare configurations, keep a throwaway sandbox repo with a fixed plan and a reset script, then:
+
+```sh
+ff eval --plan eval/plan.json --runs 2 --reset "node eval/reset.mjs" eval/variants/base.json eval/variants/codex-implements.json
+```
+
+Each variant file is a partial config merged over the repo's override; runs are interleaved and labelled.
+
 ## Configure
 
 Layers, later wins: `defaults/feature-flow.json` (this package) → `~/.agents/feature-flow/feature-flow.json`

@@ -10,6 +10,8 @@ import { withPrefixedTwins, claudeToolkit, findClaudePlugin, codexMcpServers, co
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { commitAll, discardChanges } from '../lib/git.mjs';
+import { diffStats, severityCounts } from '../lib/events.mjs';
+import { summarize, renderSummary } from '../lib/stats.mjs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -54,7 +56,7 @@ test('codexUsage sums turn.completed events and counts reasoning as output', () 
   const jsonl = ['{"type":"turn.started"}',
     '{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":40,"output_tokens":5,"reasoning_output_tokens":7}}',
     '{"type":"turn.completed","usage":{"input_tokens":10,"cached_input_tokens":0,"output_tokens":1}}'].join('\n');
-  assert.deepEqual(codexUsage(jsonl), { input: 110, cached: 40, output: 13 });
+  assert.deepEqual(codexUsage(jsonl), { input: 110, cached: 40, output: 13, costUsd: null });
 });
 
 test('recordedSandbox reads the latest turn sandbox from a dated rollout file', () => {
@@ -135,6 +137,39 @@ test('commitAll commits everything or returns null; discardChanges resets the wo
   writeFileSync(join(dir, 'a.txt'), 'changed'); writeFileSync(join(dir, 'b.txt'), 'b');
   await discardChanges(dir);
   assert.equal(g('status', '--porcelain'), '');
+});
+
+test('diffStats splits test and non-test insertions; severityCounts tallies findings', () => {
+  const s = diffStats('3\t1\tsrc/cart.mjs\n10\t0\ttest/cart.test.mjs\n2\t2\tsrc/util.spec.ts\n-\t-\timg.png\n');
+  assert.deepEqual(s, { files: 4, insertions: 15, deletions: 3, testFiles: 2, testInsertions: 12 });
+  assert.deepEqual(severityCounts([{ severity: 'major' }, { severity: 'minor' }, { severity: 'minor' }]), { blocker: 0, major: 1, minor: 2 });
+});
+
+test('summarize computes first-round pass, rounds, retries, per-stage means and PR outcomes', () => {
+  const base = { run: 'r1', epic: 5, label: 'A' };
+  const call = (ticket, phase, stage, input, cached, output, extra = {}) => ({ ...base, ticket, type: 'stage_call', phase, stage, cli: 'claude', model: 'sonnet', effort: 'medium', input, cached, output, durationMs: 10_000, costUsd: 0.5, ...extra });
+  const events = [
+    call(1, 'red', 'implement', 100, 50, 10), call(1, 'green', 'implement', 100, 80, 10), call(1, 'review', 'review', 50, 0, 5),
+    { ...base, ticket: 1, type: 'review', verdict: 'PASS', blocker: 0, major: 0, minor: 1, dodMet: true },
+    { ...base, ticket: 1, type: 'ticket_end', state: 'ready-for-qa', rounds: 1, durationMs: 120_000, pr: 9, ts: '2026-10-12T10:00:00Z', diff: { files: 2, insertions: 20, deletions: 0, testFiles: 1, testInsertions: 10 } },
+    call(2, 'red', 'implement', 100, 50, 10), call(2, 'test-fix', 'implement', 100, 50, 10), call(2, 'review', 'review', 50, 0, 5),
+    { ...base, ticket: 2, type: 'review', verdict: 'CHANGES', blocker: 1, major: 0, minor: 0, dodMet: false },
+    { ...base, ticket: 2, type: 'ticket_end', state: 'needs-human', rounds: 3, durationMs: 240_000, pr: 10 },
+    { type: 'pr_outcome', pr: 9, state: 'MERGED', humanCommits: 0, hoursToMerge: 2 },
+    { ...base, label: 'B', ticket: 3, type: 'ticket_end', state: 'ready-for-qa', rounds: 1, durationMs: 1 },
+  ];
+  const s = summarize(events, { label: 'A' });
+  assert.equal(s.tickets, 2);
+  assert.equal(s.efficacy.firstRoundPass, '50%');
+  assert.equal(s.efficacy.meanRounds, '2.00');
+  assert.deepEqual(s.efficacy.findings, { blocker: 1, major: 0, minor: 1 });
+  assert.equal(s.efficacy.dodMissedInReview, 1);
+  assert.equal(s.efficacy.prOutcomes.mergedWithoutHumanCommits, 1);
+  assert.equal(s.efficiency.retries.testFix, 1);
+  assert.equal(s.efficiency.meanTicketMinutes, '3.0');
+  assert.equal(s.efficiency.claudeApiEquivalentUsd, '3.00');
+  assert.equal(s.efficiency.byStage['implement claude/sonnet/medium'].calls, 4);
+  assert.match(renderSummary('A', s), /first-round PASS 50%/);
 });
 
 test('pool never exceeds its limit and keeps result order', async () => {

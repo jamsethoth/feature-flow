@@ -6,8 +6,8 @@ import { isReady } from '../lib/github.mjs';
 import { stageForRound, pool } from '../lib/run.mjs';
 import { codexUsage, recordedSandbox, apiCost, lastQuotaPct } from '../lib/adapters.mjs';
 import { styleBlock } from '../lib/stages.mjs';
-import { withPrefixedTwins, claudeToolkit, findClaudePlugin, codexMcpServers, codexPlugins, codexToolkit, claudeTrusted } from '../lib/toolkit.mjs';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { withPrefixedTwins, claudeToolkit, findClaudePlugin, codexMcpServers, codexPlugins, codexToolkit, claudeTrusted, grantClaudeTrust } from '../lib/toolkit.mjs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { commitAll, discardChanges } from '../lib/git.mjs';
 import { diffStats, severityCounts } from '../lib/events.mjs';
@@ -260,6 +260,11 @@ test('claudeTrusted reads (never writes) Claude Code folder trust', () => {
   assert.equal(claudeTrusted('C:\\dev\\a', home), true);
   assert.equal(claudeTrusted('C:/dev/b', home), false);
   assert.equal(claudeTrusted('C:/dev/c', home), false);
+  // grant keeps every other key and entry field, and matches the existing key case-insensitively
+  writeFileSync(join(home, '.claude.json'), JSON.stringify({ numStartups: 3, projects: { 'C:/Dev/B': { allowedTools: ['x'] } } }));
+  assert.equal(grantClaudeTrust('c:\\dev\\b', home), true);
+  const after = JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8'));
+  assert.deepEqual(after, { numStartups: 3, projects: { 'C:/Dev/B': { allowedTools: ['x'], hasTrustDialogAccepted: true } } });
 });
 
 test('pool never exceeds its limit and keeps result order', async () => {

@@ -6,7 +6,7 @@ import { run } from '../lib/exec.mjs';
 import { interactiveArgs } from '../lib/adapters.mjs';
 import { repoInfo } from '../lib/git.mjs';
 import { runEpic, codexDesktopLock, codexSandboxRaces, CODEX_LOCK_WARNING } from '../lib/run.mjs';
-import { claudeToolkit, codexToolkit, codexMcpServers, skillsBlock, claudeTrusted, TRUST_HINT } from '../lib/toolkit.mjs';
+import { claudeToolkit, codexToolkit, codexMcpServers, skillsBlock, claudeTrusted, grantClaudeTrust, TRUST_HINT } from '../lib/toolkit.mjs';
 import { eventLog, readEvents } from '../lib/events.mjs';
 import { summarize, renderSummary, refreshOutcomes } from '../lib/stats.mjs';
 import { runEval } from '../lib/eval.mjs';
@@ -17,7 +17,8 @@ import * as gh from '../lib/github.mjs';
 
 const USAGE = `feature-flow (ff)
   ff doctor               check this machine
-  ff init                 set up the current repo (labels, overrides dir, AGENTS.md commands)
+  ff init [--trust]       set up the current repo (labels, overrides dir, AGENTS.md commands);
+                          --trust also accepts Claude Code workspace trust for it (needed by ff plan --bg)
   ff plan [feature...]    start the planner interactively (plan.cli/model/effort/persona)
   ff plan --bg [feature...]   start it as a Claude Code background session (open via agent view)
   ff plan --finish [planId]   record a background planning session's metrics
@@ -75,7 +76,8 @@ async function doctor() {
   return checks.some(([, s]) => s === 'FAIL') ? 1 : 0;
 }
 
-async function init() {
+async function init(args = []) {
+  const trust = parseOpts(args).trust === true;
   const root = await repoRoot();
   await gh.ensureLabels(root);
   mkdirSync(join(root, '.agents', 'feature-flow', 'personas'), { recursive: true });
@@ -86,7 +88,12 @@ async function init() {
     console.log(`Added "## Commands" to AGENTS.md — check the commands (test: ${guess}).`);
   }
   console.log(`Labels created; overrides go in ${join(root, '.agents', 'feature-flow')} (feature-flow.json, personas/<name>.md).`);
-  if (claudeTrusted(root) === false) console.log(`Note: ${TRUST_HINT(root)} Needed for \`ff plan --bg\`; headless stages don't need it.`);
+  if (trust && claudeTrusted(root) !== true) {
+    console.log(`Trusting ${root} in Claude Code: its .claude/ settings, hooks and MCP servers will be allowed to run in Claude sessions there.`);
+    console.log(grantClaudeTrust(root) ? 'Trusted.' : `Could not confirm trust; ${TRUST_HINT(root)}`);
+  } else if (claudeTrusted(root) === false) {
+    console.log(`Note: ${TRUST_HINT(root)} Needed for \`ff plan --bg\`; headless stages don't need it. Or run \`ff init --trust\`.`);
+  }
   return 0;
 }
 
@@ -209,7 +216,7 @@ async function evalCmd(args) {
 
 const [cmd, ...rest] = process.argv.slice(2);
 const commands = {
-  doctor, init, plan: () => plan(rest), publish: () => publish(rest[0]), run: () => runCmd(rest[0]),
+  doctor, init: () => init(rest), plan: () => plan(rest), publish: () => publish(rest[0]), run: () => runCmd(rest[0]),
   stats: () => stats(rest), eval: () => evalCmd(rest),
   approve: async () => { await gh.editLabels(rest[0], { add: ['plan-approved'] }, await repoRoot()); return 0; },
   config: async () => { console.log(JSON.stringify(loadConfig(await repoRoot().catch(() => null)), null, 2)); return 0; },

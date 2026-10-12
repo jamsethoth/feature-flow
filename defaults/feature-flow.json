@@ -13,7 +13,13 @@
   "style": { "internal": "none" },
   "toolkit": {
     "claude": { "hooks": [], "plugins": ["ponytail", "mattpocock-skills"] },
-    "codex": { "useUserConfig": true, "disableMcp": true }
+    "codex": {
+      "useUserConfig": true,
+      "disableMcp": true,
+      "hooks": false,
+      "inject": ["ponytail"],
+      "disablePlugins": ["computer-use@openai-bundled", "unified-computer-use@openai-bundled", "browser@openai-bundled", "chrome@openai-bundled", "codex-app-tools@openai-bundled"]
+    }
   },
   "stageSkills": {
     "plan": ["grilling", "to-tickets", "writing-for-agents"],

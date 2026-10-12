@@ -6,7 +6,7 @@ import { run } from '../lib/exec.mjs';
 import { interactiveArgs } from '../lib/adapters.mjs';
 import { repoInfo } from '../lib/git.mjs';
 import { runEpic, codexDesktopLock, CODEX_LOCK_WARNING } from '../lib/run.mjs';
-import { claudeToolkit, codexMcpServers, skillsBlock } from '../lib/toolkit.mjs';
+import { claudeToolkit, codexToolkit, codexMcpServers, skillsBlock } from '../lib/toolkit.mjs';
 import { publishPlan } from '../lib/publish.mjs';
 import * as gh from '../lib/github.mjs';
 
@@ -46,6 +46,11 @@ async function doctor() {
     return [...(cfg.toolkit?.claude?.hooks ?? []), ...(cfg.toolkit?.claude?.plugins ?? [])].join(', ') || 'none';
   });
   if (clis.has('codex') && cfg?.toolkit?.codex?.disableMcp) checks.push(['codex MCP off', 'ok', codexMcpServers().join(', ') || 'none configured']);
+  if (clis.has('codex') && cfg) await check('codex toolkit', async () => {
+    const tk = codexToolkit(cfg.toolkit?.codex);
+    if (tk.missing.length) throw new Error(`not found: ${tk.missing.join(', ')}`);
+    return `hooks ${cfg.toolkit?.codex?.hooks === false ? 'off' : 'on'}; injected: ${(cfg.toolkit?.codex?.inject ?? []).join(', ') || 'none'}`;
+  });
   if (cfg?.style?.internal?.startsWith('caveman')) await check('caveman skill', async () => { if (!loadSkillText('caveman')) throw new Error('style.internal is caveman but no caveman skill in ~/.agents/skills or ~/.claude/skills'); return 'found'; });
   if (cfg) for (const s of STAGES) await check(`persona ${cfg[s].persona}`, async () => loadPersona(cfg[s].persona, await repoRoot().catch(() => null)).path);
   for (const [name, status, detail] of checks) console.log(`${status.padEnd(4)} ${name.padEnd(22)} ${detail}`);

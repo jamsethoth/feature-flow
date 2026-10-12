@@ -12,6 +12,7 @@ import { execFileSync } from 'node:child_process';
 import { commitAll, discardChanges } from '../lib/git.mjs';
 import { diffStats, severityCounts } from '../lib/events.mjs';
 import { summarize, renderSummary } from '../lib/stats.mjs';
+import { planShape, claudeTranscriptMetrics, codexTranscriptMetrics } from '../lib/planmetrics.mjs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -170,6 +171,37 @@ test('summarize computes first-round pass, rounds, retries, per-stage means and 
   assert.equal(s.efficiency.claudeApiEquivalentUsd, '3.00');
   assert.equal(s.efficiency.byStage['implement claude/sonnet/medium'].calls, 4);
   assert.match(renderSummary('A', s), /first-round PASS 50%/);
+});
+
+test('planShape measures size, dependency structure and specificity', () => {
+  const s = planShape({ tickets: [
+    { key: 'A', dod: ['x', 'y'], tests: ['t'] },
+    { key: 'B', dependsOn: ['A'], dod: ['x'], tests: ['t', 'u'] },
+    { key: 'C', dependsOn: ['B', 'A'], dod: ['x', 'y', 'z'], tests: [] },
+  ] });
+  assert.deepEqual(s, { tickets: 3, dependencyEdges: 3, longestChain: 3, independentTickets: 1, meanDodItems: 2, meanTestsFirst: 1 });
+});
+
+test('claudeTranscriptMetrics counts usage once per message and only real user turns', () => {
+  const t = [
+    { type: 'user', message: { content: 'plan my feature' } },
+    { type: 'assistant', message: { id: 'm1', usage: { input_tokens: 10, cache_read_input_tokens: 100, cache_creation_input_tokens: 5, output_tokens: 7 }, content: [{ type: 'text' }] } },
+    { type: 'assistant', message: { id: 'm1', usage: { input_tokens: 10, cache_read_input_tokens: 100, cache_creation_input_tokens: 5, output_tokens: 7 }, content: [{ type: 'tool_use', name: 'AskUserQuestion' }] } },
+    { type: 'user', message: { content: [{ type: 'tool_result' }] } },
+    { type: 'user', isMeta: true, message: { content: 'reminder' } },
+    { type: 'user', message: { content: [{ type: 'text', text: 'yes' }] } },
+  ].map((x) => JSON.stringify(x)).join('\n');
+  assert.deepEqual(claudeTranscriptMetrics(t), { input: 115, cached: 100, output: 7, userTurns: 2, questionsAsked: 0 });
+});
+
+test('codexTranscriptMetrics takes cumulative usage and the quota delta', () => {
+  const t = [
+    { type: 'event_msg', payload: { type: 'user_message' } },
+    { type: 'event_msg', payload: { type: 'token_count', info: { total_token_usage: { input_tokens: 100, cached_input_tokens: 40, output_tokens: 5, reasoning_output_tokens: 3 } }, rate_limits: { primary: { used_percent: 70 } } } },
+    { type: 'event_msg', payload: { type: 'user_message' } },
+    { type: 'event_msg', payload: { type: 'token_count', info: { total_token_usage: { input_tokens: 300, cached_input_tokens: 200, output_tokens: 9, reasoning_output_tokens: 1 } }, rate_limits: { primary: { used_percent: 71.5 } } } },
+  ].map((x) => JSON.stringify(x)).join('\n');
+  assert.deepEqual(codexTranscriptMetrics(t), { input: 300, cached: 200, output: 10, userTurns: 2, questionsAsked: 0, quotaUsedPct: 1.5 });
 });
 
 test('pool never exceeds its limit and keeps result order', async () => {

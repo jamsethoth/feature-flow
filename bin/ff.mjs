@@ -10,6 +10,8 @@ import { claudeToolkit, codexToolkit, codexMcpServers, skillsBlock } from '../li
 import { eventLog, readEvents } from '../lib/events.mjs';
 import { summarize, renderSummary, refreshOutcomes } from '../lib/stats.mjs';
 import { runEval } from '../lib/eval.mjs';
+import { writePlanMarker, readPlanMarker, clearPlanMarker, claudePlanMetrics, codexPlanMetrics, planShape } from '../lib/planmetrics.mjs';
+import { randomUUID } from 'node:crypto';
 import { publishPlan } from '../lib/publish.mjs';
 import * as gh from '../lib/github.mjs';
 
@@ -81,18 +83,34 @@ async function init() {
 }
 
 async function plan(words) {
-  const root = await repoRoot();
+  const info = await repoInfo(process.cwd());
+  const root = info.mainRoot;
   const cfg = loadConfig(root);
   const persona = loadPersona(cfg.plan.persona, root);
+  const dir = join(info.gitCommonDir, 'feature-flow');
+  const ev = eventLog(dir);
+  const planId = randomUUID();
+  const started = Date.now();
+  // The marker lets `ff publish`, run from inside the session, tag the epic with this planId.
+  writePlanMarker(dir, { planId, started });
   const opening = `Start the feature-flow planning procedure for the repo at ${root}. planApproval is ${cfg.planApproval}.\nFeature request: ${words.join(' ') || '(ask me for it)'}${skillsBlock(cfg.stageSkills?.plan)}`;
-  const [cmd, args] = interactiveArgs(cfg.plan, persona, opening);
-  return (await run(cmd, args, { cwd: process.cwd(), inherit: true, allowFail: true })).code;
+  const [cmd, args] = interactiveArgs(cfg.plan, persona, opening, cfg.plan.cli === 'claude' ? planId : undefined);
+  const code = (await run(cmd, args, { cwd: process.cwd(), inherit: true, allowFail: true })).code;
+  const metrics = cfg.plan.cli === 'claude' ? claudePlanMetrics(planId) : codexPlanMetrics(process.cwd(), started);
+  ev('plan_session', { planId, cli: cfg.plan.cli, model: cfg.plan.model, effort: cfg.plan.effort, persona: persona.name, personaHash: persona.hash,
+    durationMs: Date.now() - started, ...(metrics ?? { metrics: 'transcript not found' }) });
+  clearPlanMarker(dir);
+  return code;
 }
 
 async function publish(file) {
-  const root = await repoRoot();
+  const info = await repoInfo(process.cwd());
+  const root = info.mainRoot;
   const cfg = loadConfig(root);
-  const res = await publishPlan(JSON.parse(readFileSync(file, 'utf8')), { cwd: root, approve: !cfg.planApproval });
+  const planJson = JSON.parse(readFileSync(file, 'utf8'));
+  const res = await publishPlan(planJson, { cwd: root, approve: !cfg.planApproval });
+  const dir = join(info.gitCommonDir, 'feature-flow');
+  eventLog(dir)('plan_published', { planId: readPlanMarker(dir)?.planId ?? null, epic: res.epic, ...planShape(planJson) });
   console.log(JSON.stringify(res));
   console.log(cfg.planApproval ? `Epic #${res.epic} awaits approval: ff approve ${res.epic}` : `Epic #${res.epic} is approved: ff run ${res.epic}`);
   return 0;

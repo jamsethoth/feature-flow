@@ -80,6 +80,9 @@ Layers, later wins: `defaults/feature-flow.json` (this package) → `~/.agents/f
 | `baseBranch` | `main` | PR base |
 | `worktreeRoot` | `~/worktrees` | ticket worktrees at `<root>/<repo>/ticket-<n>` |
 | `allowNetwork` | `false` | let implementation agents use the network |
+| `toolkit.claude` | `{ hooks: ["rtk"], plugins: ["ponytail", "mattpocock-skills"] }` | added on top of the isolated headless Claude base (user settings are not loaded). Plugins are found by name in installed or account-synced plugins; `ff doctor` reports missing ones |
+| `toolkit.codex` | `{ useUserConfig: true, disableMcp: true }` | keep `~/.codex/config.toml` (hooks, plugins, skills) but turn every MCP server off for headless runs |
+| `stageSkills` | see defaults | skills each stage is told to use when available (e.g. `implement: ["tdd"]`) |
 | `style.internal` | `none` | `caveman-lite\|full\|ultra`: compress agent-only prose with the shared `caveman` skill; human-facing text stays natural. Measured on the sandbox (2 runs per arm): no output savings and about 25% more input tokens, so it is off by default |
 
 Personas live in `personas/<name>.md`; a file of the same name in `~/.agents/feature-flow/personas/` or

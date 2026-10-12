@@ -3,13 +3,13 @@ import assert from 'node:assert/strict';
 import { mergeConfig, parseCommands, loadConfig, loadPersona, budgetFor } from '../lib/config.mjs';
 import { topoSort } from '../lib/publish.mjs';
 import { isReady } from '../lib/github.mjs';
-import { stageForRound, pool } from '../lib/run.mjs';
+import { stageForRound, pool, cleanupMerged } from '../lib/run.mjs';
 import { codexUsage, recordedSandbox, apiCost, lastQuotaPct } from '../lib/adapters.mjs';
 import { styleBlock } from '../lib/stages.mjs';
 import { withPrefixedTwins, claudeToolkit, findClaudePlugin, codexMcpServers, codexPlugins, codexToolkit, claudeTrusted, grantClaudeTrust } from '../lib/toolkit.mjs';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { commitAll, discardChanges } from '../lib/git.mjs';
+import { commitAll, discardChanges, ensureWorktree } from '../lib/git.mjs';
 import { parseOpts } from '../lib/opts.mjs';
 import { diffStats, severityCounts } from '../lib/events.mjs';
 import { summarize, renderSummary } from '../lib/stats.mjs';
@@ -152,6 +152,46 @@ test('commitAll commits everything or returns null; discardChanges resets the wo
   writeFileSync(join(dir, 'a.txt'), 'changed'); writeFileSync(join(dir, 'b.txt'), 'b');
   await discardChanges(dir);
   assert.equal(g('status', '--porcelain'), '');
+});
+
+// A clone of a bare origin with one commit on main, so ensureWorktree can fetch origin/main.
+function cloneWithOrigin() {
+  const root = mkdtempSync(join(tmpdir(), 'ff-wt-'));
+  const sh = (cwd, ...a) => execFileSync('git', a, { cwd, encoding: 'utf8' }).trim();
+  sh(root, 'init', '-q', '--bare', '-b', 'main', 'origin.git');
+  sh(root, 'clone', '-q', 'origin.git', 'main');
+  const mainRoot = join(root, 'main');
+  sh(mainRoot, 'config', 'user.name', 't'); sh(mainRoot, 'config', 'user.email', 't@t');
+  sh(mainRoot, 'commit', '-q', '--allow-empty', '-m', 'init');
+  sh(mainRoot, 'push', '-q', 'origin', 'main');
+  return { root, mainRoot, sh };
+}
+
+test('ensureWorktree reuses the existing branch when the title (and so the derived branch) changed', async () => {
+  const { root, mainRoot, sh } = cloneWithOrigin();
+  const path = join(root, 'wt', 'ticket-4');
+  await ensureWorktree({ mainRoot, path, branch: 'ticket/4-old-title', base: 'main' });
+  const again = await ensureWorktree({ mainRoot, path, branch: 'ticket/4-new-title', base: 'main' });
+  assert.equal(again.branch, 'ticket/4-old-title');
+  assert.equal(sh(path, 'rev-parse', '--abbrev-ref', 'HEAD'), 'ticket/4-old-title');
+});
+
+test('ensureWorktree rejects a plain folder at the worktree path and names it', async () => {
+  const { root, mainRoot } = cloneWithOrigin();
+  const path = join(root, 'wt', 'ticket-4');
+  mkdirSync(path, { recursive: true });
+  await assert.rejects(ensureWorktree({ mainRoot, path, branch: 'ticket/4-x', base: 'main' }), (e) => e.message.includes(path));
+});
+
+test('cleanupMerged keeps a merged ticket worktree that has uncommitted changes', async () => {
+  const { root, mainRoot } = cloneWithOrigin();
+  const path = join(root, 'wt', 'ticket-4');
+  await ensureWorktree({ mainRoot, path, branch: 'ticket/4-x', base: 'main' });
+  writeFileSync(join(path, 'unsaved.txt'), 'work');
+  const logs = [];
+  await cleanupMerged({ mainRoot }, {}, (m) => logs.push(m), { findPr: async () => ({ state: 'MERGED' }) });
+  assert.ok(existsSync(join(path, 'unsaved.txt')));
+  assert.ok(logs.some((l) => l.includes('ticket/4-x')));
 });
 
 test('diffStats splits test and non-test insertions; severityCounts tallies findings', () => {

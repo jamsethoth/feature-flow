@@ -6,7 +6,7 @@ import { isReady } from '../lib/github.mjs';
 import { stageForRound, pool } from '../lib/run.mjs';
 import { codexUsage, recordedSandbox, apiCost, lastQuotaPct } from '../lib/adapters.mjs';
 import { styleBlock } from '../lib/stages.mjs';
-import { withPrefixedTwins, claudeToolkit, findClaudePlugin, codexMcpServers, codexPlugins, codexToolkit } from '../lib/toolkit.mjs';
+import { withPrefixedTwins, claudeToolkit, findClaudePlugin, codexMcpServers, codexPlugins, codexToolkit, claudeTrusted } from '../lib/toolkit.mjs';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { commitAll, discardChanges } from '../lib/git.mjs';
@@ -251,6 +251,15 @@ test('contextVsOutcome buckets reviews, implementations and plans by peak contex
   assert.deepEqual(c.review, [{ bucket: '<50k', n: 1, passRate: '100%', seriousFindingsPerReview: '0.00' }, { bucket: '100-150k', n: 1, passRate: '0%', seriousFindingsPerReview: '2.00' }]);
   assert.deepEqual(c.implement.map((r) => [r.bucket, r.firstRoundPass, r.testFixRetriesPerTicket]), [['<50k', '100%', '0.00'], ['100-150k', '0%', '1.00']]);
   assert.deepEqual(c.plan, [{ bucket: '50-100k', n: 1, tickets: 2, downstreamFirstRoundPass: '50%', blockedTickets: 0 }]);
+});
+
+test('claudeTrusted reads (never writes) Claude Code folder trust', () => {
+  const home = mkdtempSync(join(tmpdir(), 'ff-trust-'));
+  assert.equal(claudeTrusted('C:\\x', home), null);
+  writeFileSync(join(home, '.claude.json'), JSON.stringify({ projects: { 'C:/dev/a': { hasTrustDialogAccepted: true }, 'C:/dev/b': {} } }));
+  assert.equal(claudeTrusted('C:\\dev\\a', home), true);
+  assert.equal(claudeTrusted('C:/dev/b', home), false);
+  assert.equal(claudeTrusted('C:/dev/c', home), false);
 });
 
 test('pool never exceeds its limit and keeps result order', async () => {

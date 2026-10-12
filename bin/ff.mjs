@@ -6,7 +6,7 @@ import { run } from '../lib/exec.mjs';
 import { interactiveArgs } from '../lib/adapters.mjs';
 import { repoInfo } from '../lib/git.mjs';
 import { runEpic, codexDesktopLock, codexSandboxRaces, CODEX_LOCK_WARNING } from '../lib/run.mjs';
-import { claudeToolkit, codexToolkit, codexMcpServers, skillsBlock } from '../lib/toolkit.mjs';
+import { claudeToolkit, codexToolkit, codexMcpServers, skillsBlock, claudeTrusted, TRUST_HINT } from '../lib/toolkit.mjs';
 import { eventLog, readEvents } from '../lib/events.mjs';
 import { summarize, renderSummary, refreshOutcomes } from '../lib/stats.mjs';
 import { runEval } from '../lib/eval.mjs';
@@ -53,6 +53,11 @@ async function doctor() {
   if (clis.has('codex')) checks.push(['codex sandbox free', ...(!cfg || codexSandboxRaces(cfg)
     ? (await codexDesktopLock() ? ['WARN', CODEX_LOCK_WARNING] : ['ok', 'no node_repl lock'])
     : ['ok', `windowsSandbox=${cfg.toolkit.codex.windowsSandbox} (no node_repl race)`])]);
+  const here = await repoRoot().catch(() => null);
+  if (here && cfg?.plan.cli === 'claude') {
+    const t = claudeTrusted(here);
+    checks.push(['claude folder trust', t === false ? 'WARN' : 'ok', t === false ? `${TRUST_HINT(here)} (needed for ff plan --bg)` : t ? 'trusted' : 'unknown']);
+  }
   if (clis.has('claude') && cfg) await check('claude toolkit', async () => {
     const tk = claudeToolkit(cfg.toolkit?.claude);
     if (tk.missing.length) throw new Error(`not found: ${tk.missing.join(', ')}`);
@@ -81,6 +86,7 @@ async function init() {
     console.log(`Added "## Commands" to AGENTS.md — check the commands (test: ${guess}).`);
   }
   console.log(`Labels created; overrides go in ${join(root, '.agents', 'feature-flow')} (feature-flow.json, personas/<name>.md).`);
+  if (claudeTrusted(root) === false) console.log(`Note: ${TRUST_HINT(root)} Needed for \`ff plan --bg\`; headless stages don't need it.`);
   return 0;
 }
 
@@ -128,6 +134,7 @@ async function plan(args) {
 
   if (o.bg) {
     if (cfg.plan.cli !== 'claude') throw new Error('--bg needs plan.cli = claude (Claude Code background sessions)');
+    if (claudeTrusted(root) === false) { clearPlanMarker(dir); throw new Error(TRUST_HINT(root)); }
     // A background Claude session: open it from Claude Code's agent view (left arrow on an empty prompt).
     const r = await run(cmd, ['--bg', '--name', `ff plan: ${info.name}`, ...cliArgs], { cwd: root, allowFail: true });
     if (r.code !== 0) { clearPlanMarker(dir); throw new Error(`claude --bg failed:\n${r.stderr || r.stdout}`); }

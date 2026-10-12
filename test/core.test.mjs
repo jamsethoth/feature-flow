@@ -4,6 +4,8 @@ import { mergeConfig, parseCommands, loadConfig, loadPersona } from '../lib/conf
 import { topoSort } from '../lib/publish.mjs';
 import { isReady } from '../lib/github.mjs';
 import { stageForRound, pool } from '../lib/run.mjs';
+import { codexUsage } from '../lib/adapters.mjs';
+import { styleBlock } from '../lib/stages.mjs';
 
 test('mergeConfig merges stage objects key by key, later layers win', () => {
   const out = mergeConfig({ implement: { cli: 'claude', model: 'sonnet' }, maxParallel: 2 }, { implement: { model: 'opus' }, maxParallel: 1 });
@@ -40,6 +42,22 @@ test('stageForRound: first try, fix rounds, optional single escalation', () => {
   assert.deepEqual([0, 1, 2, 3].map((r) => stageForRound(r, cfg)), ['implement', 'implement', 'implement', null]);
   const esc = { ...cfg, escalationEnabled: true };
   assert.deepEqual([2, 3, 4].map((r) => stageForRound(r, esc)), ['implement', 'escalate', null]);
+});
+
+test('codexUsage sums turn.completed events and counts reasoning as output', () => {
+  const jsonl = ['{"type":"turn.started"}',
+    '{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":40,"output_tokens":5,"reasoning_output_tokens":7}}',
+    '{"type":"turn.completed","usage":{"input_tokens":10,"cached_input_tokens":0,"output_tokens":1}}'].join('\n');
+  assert.deepEqual(codexUsage(jsonl), { input: 110, cached: 40, output: 13 });
+});
+
+test('styleBlock: caveman only for agent-facing prose, human fields stay natural', () => {
+  assert.doesNotMatch(styleBlock({ internal: 'none' }, 'RULES'), /RULES|caveman-style/);
+  assert.doesNotMatch(styleBlock({ internal: 'caveman-ultra' }, null), /caveman-style/);
+  const s = styleBlock({ internal: 'caveman-ultra' }, 'RULES');
+  assert.match(s, /\*\*ultra\*\*/);
+  assert.match(s, /RULES/);
+  assert.match(s, /never caveman/);
 });
 
 test('pool never exceeds its limit and keeps result order', async () => {

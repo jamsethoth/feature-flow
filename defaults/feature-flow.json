@@ -9,5 +9,6 @@
   "maxReviewRounds": 2,
   "baseBranch": "main",
   "worktreeRoot": "~/worktrees",
-  "allowNetwork": false
+  "allowNetwork": false,
+  "style": { "internal": "none" }
 }

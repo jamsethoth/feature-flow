@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 import { readFileSync, existsSync, mkdirSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { loadConfig, loadPersona, loadCommands, STAGES } from '../lib/config.mjs';
+import { loadConfig, loadPersona, loadCommands, loadSkillText, STAGES } from '../lib/config.mjs';
 import { run } from '../lib/exec.mjs';
 import { interactiveArgs } from '../lib/adapters.mjs';
 import { repoInfo } from '../lib/git.mjs';
-import { runEpic } from '../lib/run.mjs';
+import { runEpic, codexDesktopLock, CODEX_LOCK_WARNING } from '../lib/run.mjs';
 import { publishPlan } from '../lib/publish.mjs';
 import * as gh from '../lib/github.mjs';
 
@@ -38,6 +38,8 @@ async function doctor() {
   const clis = new Set(cfg ? STAGES.map((s) => cfg[s].cli) : ['claude', 'codex']);
   if (clis.has('claude')) await check('claude', async () => (await run('claude', ['--version'])).stdout.trim());
   if (clis.has('codex')) await check('codex login', async () => { const r = await run('codex', ['login', 'status']); return (r.stdout + r.stderr).trim(); });
+  if (clis.has('codex')) checks.push(['codex sandbox free', ...(await codexDesktopLock() ? ['WARN', CODEX_LOCK_WARNING] : ['ok', 'no Codex desktop lock'])]);
+  if (cfg?.style?.internal?.startsWith('caveman')) await check('caveman skill', async () => { if (!loadSkillText('caveman')) throw new Error('style.internal is caveman but no caveman skill in ~/.agents/skills or ~/.claude/skills'); return 'found'; });
   if (cfg) for (const s of STAGES) await check(`persona ${cfg[s].persona}`, async () => loadPersona(cfg[s].persona, await repoRoot().catch(() => null)).path);
   for (const [name, status, detail] of checks) console.log(`${status.padEnd(4)} ${name.padEnd(22)} ${detail}`);
   return checks.some(([, s]) => s === 'FAIL') ? 1 : 0;

@@ -4,7 +4,7 @@ import { mergeConfig, parseCommands, loadConfig, loadPersona } from '../lib/conf
 import { topoSort } from '../lib/publish.mjs';
 import { isReady } from '../lib/github.mjs';
 import { stageForRound, pool } from '../lib/run.mjs';
-import { codexUsage } from '../lib/adapters.mjs';
+import { codexUsage, recordedSandbox } from '../lib/adapters.mjs';
 import { styleBlock } from '../lib/stages.mjs';
 import { withPrefixedTwins, claudeToolkit, findClaudePlugin, codexMcpServers, codexPlugins, codexToolkit } from '../lib/toolkit.mjs';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
@@ -55,6 +55,16 @@ test('codexUsage sums turn.completed events and counts reasoning as output', () 
     '{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":40,"output_tokens":5,"reasoning_output_tokens":7}}',
     '{"type":"turn.completed","usage":{"input_tokens":10,"cached_input_tokens":0,"output_tokens":1}}'].join('\n');
   assert.deepEqual(codexUsage(jsonl), { input: 110, cached: 40, output: 13 });
+});
+
+test('recordedSandbox reads the latest turn sandbox from a dated rollout file', () => {
+  const home = mkdtempSync(join(tmpdir(), 'ff-codexhome-'));
+  const d = new Date();
+  const dir = join(home, 'sessions', ...[d.getFullYear(), d.getMonth() + 1, d.getDate()].map((x) => String(x).padStart(2, '0')));
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'rollout-2026-x-abc123.jsonl'), '{"type":"turn_context","payload":{"sandbox_policy":{"type":"read-only"}}}\n{"type":"turn_context","payload":{"sandbox_policy":{"type":"workspace-write","x":1}}}\n');
+  assert.equal(recordedSandbox('abc123', home), 'workspace-write');
+  assert.match(recordedSandbox('missing', home), /not found/);
 });
 
 test('styleBlock: caveman only for agent-facing prose, human fields stay natural', () => {

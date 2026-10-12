@@ -1,0 +1,157 @@
+{
+  "title": "Robustness fixes from the parser & IO review",
+  "summary": "Fixes the defects found by the 2026-10-12 review of argument parsing, child-process handling, external-output parsing and silent-failure defaults (finding numbers refer to that review). Most of them failed silently, like the `ff plan --bg` bug that dropped the feature text.\n\nOut of scope: per-stage tool access (separate epic), npm .cmd shim support, bare-repo/submodule support, and remaining low-severity edge cases not named in a ticket.",
+  "tickets": [
+    {
+      "key": "T1",
+      "title": "Harden child-process execution",
+      "goal": "A child process that fails early, emits multi-byte text, waits for stdin or hangs is reported accurately instead of crashing ff, garbling output or blocking for 30 minutes.",
+      "inScope": [
+        "lib/exec.mjs run(): handle stdin 'error' (finding 7) so an early child exit rejects normally with exit code and stderr",
+        "decode stdout/stderr as UTF-8 streams in run() and runShell() (finding 8)",
+        "runShell(): stdin closed/ignored (finding 9)",
+        "runShell() timeout on Windows kills the whole process tree and reports the timeout explicitly (finding 10)",
+        "error message puts stderr before the (truncated) argument list (finding 12)"
+      ],
+      "outOfScope": ["npm .cmd shim support", "changing which commands ff spawns"],
+      "dod": [
+        "run() with a child that exits immediately while 5 MB of stdin is being written rejects (or resolves with allowFail) with the exit code; the ff process does not crash",
+        "a child that writes a multi-byte character split across two chunks is read back exactly",
+        "runShell() of a command that waits for stdin EOF returns promptly",
+        "runShell() of a command that outlives timeoutMs returns within about 2 s of the timeout, with a result marked as timed out, and leaves no child process running",
+        "the error message of a failed run() contains the child's stderr even when the argument list is several KB long"
+      ],
+      "tests": ["early-exit child with large stdin", "split multi-byte output", "stdin-waiting shell command", "timeout kills the tree and is flagged", "stderr survives long argument lists"],
+      "qaHints": ["Run ff doctor and an ff run on the sandbox to confirm nothing regressed"],
+      "dependsOn": []
+    },
+    {
+      "key": "T2",
+      "title": "Only a genuine failing test counts as a verified red phase",
+      "goal": "The red phase is verified only when the test run actually reports failing tests, not when the runner crashed, timed out or was not found.",
+      "inScope": [
+        "lib/run.mjs red gate and lib/stages.mjs red prompt/schema (finding 11)",
+        "red result reports the names of the failing tests it wrote; ff checks the test output shows failures and those names",
+        "timeouts and runner errors (exit code null, command not found) are rejected as red evidence with a clear history message for the next attempt"
+      ],
+      "outOfScope": ["parsing every test runner's output format; a name match plus a non-null nonzero exit is enough"],
+      "dod": [
+        "a red gate whose test run timed out is not committed as test: and is recorded as a failed red phase",
+        "a red gate whose output does not mention any of the reported failing test names is not committed",
+        "a red gate with a nonzero exit and the reported test names in its output is committed as before",
+        "the red_failed event records the reason"
+      ],
+      "tests": ["timed-out red run rejected", "runner-not-found output rejected", "matching failing test names accepted"],
+      "qaHints": ["On the sandbox, a normal ff run still produces test: then feat: commits"],
+      "dependsOn": ["T1"]
+    },
+    {
+      "key": "T3",
+      "title": "Worktrees survive title edits and leftovers",
+      "goal": "Re-running a ticket works after its title changed or a stale folder was left behind, and cleanup never deletes unsaved work.",
+      "inScope": [
+        "branch for an existing ticket worktree is read from the worktree, not re-derived from the current title (finding 16)",
+        "an existing path is reused only if it is a git worktree of this repo on a ticket branch; otherwise ff stops with a clear error (finding 17)",
+        "cleanupMerged skips worktrees with uncommitted changes or unpushed commits and logs why (finding 18)"
+      ],
+      "outOfScope": ["bare repositories and submodules"],
+      "dod": [
+        "a ticket whose title changed after its worktree was created pushes to the existing branch",
+        "a plain directory at the worktree path makes ff run fail that ticket with a message naming the path",
+        "cleanupMerged leaves a merged ticket's worktree in place when it has uncommitted changes"
+      ],
+      "tests": ["renamed title reuses existing branch", "non-worktree folder rejected", "dirty merged worktree not removed"],
+      "qaHints": ["Rename a sandbox ticket mid-flight and re-run ff run"],
+      "dependsOn": []
+    },
+    {
+      "key": "T4",
+      "title": "Publishing never silently drops or duplicates tickets",
+      "goal": "ff publish rejects malformed plans up front and, if GitHub fails mid-way, reports exactly what was created.",
+      "inScope": [
+        "duplicate ticket keys and a missing or empty tickets array are rejected before any issue is created (finding 21)",
+        "a failure part-way through publishing reports the epic and ticket numbers already created (finding 22)",
+        "plan and eval JSON files are read BOM-tolerantly and parse errors name the file (finding 25)",
+        "createIssue fails clearly if gh does not return an issue URL instead of passing NaN on (finding 14)"
+      ],
+      "outOfScope": ["rolling back created issues"],
+      "dod": [
+        "publishing a plan with two tickets sharing a key throws before creating anything",
+        "a simulated failure on the third issue throws an error that lists the epic and the two created ticket numbers",
+        "a plan file saved with a UTF-8 BOM publishes; an invalid one errors with its file name",
+        "an unexpected gh output for issue creation throws instead of returning NaN"
+      ],
+      "tests": ["duplicate keys rejected", "partial publish reports created numbers", "BOM plan file accepted", "non-URL gh output rejected"],
+      "qaHints": ["Publish eval/plan.json in the sandbox after saving it with a BOM"],
+      "dependsOn": []
+    },
+    {
+      "key": "T5",
+      "title": "Config and commands parse without silent losses",
+      "goal": "Repo overrides and AGENTS.md commands behave as written: nested overrides keep sibling settings and hyphenated or duplicate command names are not silently lost.",
+      "inScope": [
+        "mergeConfig deep-merges plain objects at every level; arrays and scalars replace (finding 24)",
+        "__proto__, constructor and prototype keys are ignored when merging",
+        "## Commands accepts hyphenated names such as lint-js; duplicate names produce a warning (finding 23)",
+        "README documents the merge rule"
+      ],
+      "outOfScope": ["new config keys"],
+      "dod": [
+        "overriding toolkit.claude.plugins keeps toolkit.claude.hooks from the lower layer",
+        "overriding contextBudget.byModel.opus keeps the other byModel entries",
+        "- lint-js: `x` is parsed as lint-js",
+        "two test: lines produce a warning naming the duplicate"
+      ],
+      "tests": ["nested override keeps siblings", "prototype keys ignored", "hyphenated command name", "duplicate command warning"],
+      "qaHints": ["ff config in the sandbox shows unchanged defaults"],
+      "dependsOn": []
+    },
+    {
+      "key": "T6",
+      "title": "No silent no-ops or stuck tickets",
+      "goal": "A run that has nothing to do, fails to update GitHub or leaves tickets stuck says so and exits non-zero, and stuck tickets can be recovered.",
+      "inScope": [
+        "a failed needs-human / in-progress label update is logged and recorded as an event instead of swallowed (finding 29)",
+        "ff run detects tickets labelled in-progress with no live ff run (lock file with pid per epic) and reports them; --retry-stuck clears the label so they run again (finding 29)",
+        "an epic with zero sub-issues, or with nothing ready, explains why and exits non-zero (finding 30)",
+        "ff stats --refresh counts and reports PRs it could not refresh (finding 31)",
+        "diff stats failure is logged rather than recorded as zeros (finding 32)"
+      ],
+      "outOfScope": ["automatic retry of stuck tickets without the flag"],
+      "dod": [
+        "a label update failure appears in the run log and events with the ticket number",
+        "an in-progress ticket from a dead run is reported by ff run, and ff run --retry-stuck runs it",
+        "ff run on an issue with no sub-issues exits non-zero with an explanation",
+        "ff stats --refresh prints how many PRs failed to refresh"
+      ],
+      "tests": ["swallowed label failure now surfaced", "stale lock detection", "zero sub-issues exit code", "refresh failure count"],
+      "qaHints": ["Kill an ff run mid-ticket in the sandbox, then run again with --retry-stuck"],
+      "dependsOn": []
+    },
+    {
+      "key": "T7",
+      "title": "Strict, validated CLI options",
+      "goal": "Typos, missing values and bad numbers in ff commands produce a clear error and usage instead of silently doing something else.",
+      "inScope": [
+        "per-command allowlists of value and boolean flags; unknown flags are rejected (finding 1)",
+        "--flag=value form (finding 2)",
+        "a value flag with no value is an error (finding 3)",
+        "-- ends option parsing (finding 4)",
+        "dispatch uses own properties only (finding 5)",
+        "ff --help and ff <command> --help print usage and exit 0; epic numbers and --runs must be positive integers (findings 6, 34)"
+      ],
+      "outOfScope": ["short single-dash flags"],
+      "dod": [
+        "ff plan --bgg \"x\" fails with an unknown-flag error",
+        "ff eval --runs=3 a.json runs 3 times",
+        "ff eval --plan with no value fails with usage",
+        "ff plan --bg -- \"--weird\" passes --weird as the feature text",
+        "ff constructor prints usage and exits 1",
+        "ff run abc and ff eval --runs three fail with a clear error"
+      ],
+      "tests": ["unknown flag rejected", "--flag=value parsed", "missing value rejected", "-- ends options", "inherited property names rejected", "non-numeric epic rejected"],
+      "qaHints": ["Try a few typo'd commands and check the messages"],
+      "dependsOn": []
+    }
+  ]
+}

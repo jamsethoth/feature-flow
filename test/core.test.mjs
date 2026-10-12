@@ -6,7 +6,7 @@ import { isReady } from '../lib/github.mjs';
 import { stageForRound, pool } from '../lib/run.mjs';
 import { codexUsage } from '../lib/adapters.mjs';
 import { styleBlock } from '../lib/stages.mjs';
-import { withPrefixedTwins, claudeToolkit, findClaudePlugin, codexMcpServers, codexPlugins } from '../lib/toolkit.mjs';
+import { withPrefixedTwins, claudeToolkit, findClaudePlugin, codexMcpServers, codexPlugins, codexToolkit } from '../lib/toolkit.mjs';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -96,6 +96,13 @@ test('codexMcpServers lists top-level server tables only', () => {
   const home = mkdtempSync(join(tmpdir(), 'ff-codex-'));
   writeFileSync(join(home, 'config.toml'), '[mcp_servers.playwright]\nargs=[]\n[mcp_servers.node_repl.env]\nX=1\n[mcp_servers.serena]\n[projects."/x"]\n');
   assert.deepEqual(codexMcpServers(home), ['playwright', 'serena']);
+});
+
+test('codexToolkit passes the Windows sandbox mode and hook switch', () => {
+  const { args } = codexToolkit({ hooks: false, windowsSandbox: 'mxc' });
+  assert.ok(args.join(' ').includes('features.hooks=false'));
+  assert.equal(args.includes('windows.sandbox="mxc"'), process.platform === 'win32');
+  assert.deepEqual(codexToolkit({ useUserConfig: false }).args, ['--ignore-user-config']);
 });
 
 test('codexPlugins lists configured plugin tables', () => {

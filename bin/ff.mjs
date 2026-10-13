@@ -154,7 +154,7 @@ async function plan(args) {
     if (cfg.plan.cli !== 'claude') throw new Error('--bg needs plan.cli = claude (Claude Code background sessions)');
     if (claudeTrusted(root) === false) { clearPlanMarker(dir); throw new Error(TRUST_HINT(root)); }
     // A background Claude session: open it from Claude Code's agent view (left arrow on an empty prompt).
-    const r = await run(cmd, ['--bg', '--name', `ff plan: ${info.name}`, ...cliArgs], { cwd: root, allowFail: true });
+    const r = await run(cmd, ['--bg', '--name', `ff plan: ${info.name}`, ...cliArgs], { cwd: root, allowFail: true, env: { FF_PLAN_ID: planId } });
     if (r.code !== 0) { clearPlanMarker(dir); throw new Error(`claude --bg failed:\n${r.stderr || r.stdout}`); }
     // Background sessions get their own id (--session-id is not honoured with --bg), so record the real one.
     const shortId = /claude (?:stop|attach|logs) ([0-9a-f]{6,})/.exec(r.stdout ?? '')?.[1] ?? null;
@@ -166,7 +166,7 @@ async function plan(args) {
     return 0;
   }
 
-  const code = (await run(cmd, cliArgs, { cwd: process.cwd(), inherit: true, allowFail: true })).code;
+  const code = (await run(cmd, cliArgs, { cwd: process.cwd(), inherit: true, allowFail: true, env: { FF_PLAN_ID: planId } })).code;
   recordPlanSession({ ev, dir, cfg, persona, planId, started, cwd: process.cwd() });
   return code;
 }
@@ -178,7 +178,8 @@ async function publish(file) {
   const planJson = JSON.parse(readFileSync(file, 'utf8'));
   const res = await publishPlan(planJson, { cwd: root, approve: !cfg.planApproval });
   const dir = join(info.gitCommonDir, 'feature-flow');
-  eventLog(dir)('plan_published', { planId: readPlanMarker(dir)?.planId ?? null, epic: res.epic, ...planShape(planJson) });
+  // FF_PLAN_ID is set by `ff plan` for its own session, so concurrent planners don't share the marker.
+  eventLog(dir)('plan_published', { planId: process.env.FF_PLAN_ID ?? readPlanMarker(dir)?.planId ?? null, epic: res.epic, ...planShape(planJson) });
   console.log(JSON.stringify(res));
   console.log(cfg.planApproval ? `Epic #${res.epic} awaits approval: ff approve ${res.epic}` : `Epic #${res.epic} is approved: ff run ${res.epic}`);
   return 0;

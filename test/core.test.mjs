@@ -274,6 +274,62 @@ test('parseOpts: boolean flags never swallow the next argument', () => {
   assert.deepEqual(parseOpts(['42', '--refresh', '--label', 'A']), { _: ['42'], refresh: true, label: 'A' });
 });
 
+const PLAN_SPEC = { values: ['name', 'session'], bools: ['bg'] };
+const EVAL_SPEC = { values: ['plan', 'runs', 'reset'], bools: [] };
+
+test('parseOpts: unknown flags are rejected', () => {
+  assert.throws(() => parseOpts(['--bgg', 'x'], PLAN_SPEC), /unknown.*--bgg/i);
+});
+
+test('parseOpts: --flag=value is parsed, also for empty and = containing values', () => {
+  assert.deepEqual(parseOpts(['--runs=3', 'a.json'], EVAL_SPEC), { _: ['a.json'], runs: '3' });
+  assert.deepEqual(parseOpts(['--reset=a=b'], EVAL_SPEC), { _: [], reset: 'a=b' });
+  assert.throws(() => parseOpts(['--bg=yes'], PLAN_SPEC), /--bg/);
+});
+
+test('parseOpts: a value flag with no value is an error', () => {
+  assert.throws(() => parseOpts(['--plan'], EVAL_SPEC), /--plan.*value/i);
+  assert.throws(() => parseOpts(['--plan', '--runs', '2'], EVAL_SPEC), /--plan.*value/i);
+});
+
+test('parseOpts: -- ends option parsing', () => {
+  assert.deepEqual(parseOpts(['--bg', '--', '--weird', '--bgg'], PLAN_SPEC), { _: ['--weird', '--bgg'], bg: true });
+});
+
+test('parseOpts: inherited property names are not flags', () => {
+  assert.throws(() => parseOpts(['--constructor', 'x'], PLAN_SPEC), /unknown/i);
+  assert.throws(() => parseOpts(['--toString'], PLAN_SPEC), /unknown/i);
+  assert.equal(Object.hasOwn(parseOpts(['--bg'], PLAN_SPEC), 'toString'), false);
+});
+
+const ff = (...args) => {
+  try {
+    return { code: 0, out: execFileSync(process.execPath, [join(import.meta.dirname, '..', 'bin', 'ff.mjs'), ...args], { encoding: 'utf8', stdio: 'pipe' }), err: '' };
+  } catch (e) { return { code: e.status, out: String(e.stdout), err: String(e.stderr) }; }
+};
+
+test('ff: --help and <command> --help print usage and exit 0', () => {
+  for (const args of [['--help'], ['eval', '--help'], ['run', '--help']]) {
+    const r = ff(...args);
+    assert.equal(r.code, 0, args.join(' '));
+    assert.match(r.out, /feature-flow \(ff\)/);
+  }
+});
+
+test('ff: inherited command names print usage and exit 1', () => {
+  const r = ff('constructor');
+  assert.equal(r.code, 1);
+  assert.match(r.out, /feature-flow \(ff\)/);
+});
+
+test('ff: non-numeric epic or --runs fail with a clear error', () => {
+  assert.match(ff('run', 'abc').err, /epic.*abc/i);
+  assert.equal(ff('run', 'abc').code, 1);
+  assert.match(ff('eval', '--plan', 'p.json', '--runs', 'three', 'v.json').err, /--runs.*three/i);
+  assert.match(ff('eval', '--plan', 'p.json', '--runs', '0', 'v.json').err, /--runs/i);
+  assert.match(ff('eval', '--plan').err, /usage|--plan/i);
+});
+
 test('pool never exceeds its limit and keeps result order', async () => {
   let live = 0, peak = 0;
   const res = await pool([1, 2, 3, 4, 5], 2, async (x) => {

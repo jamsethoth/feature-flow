@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as run from '../lib/run.mjs';
 import * as stats from '../lib/stats.mjs';
+import * as gh from '../lib/github.mjs';
 
 const issue = (number, labels = [], extra = {}) => ({ number, state: 'OPEN', labels: labels.map((name) => ({ name })), ...extra });
 
@@ -172,6 +173,53 @@ test('ticketBranches finds and discardBranch removes a ticket\'s branches, workt
     assert.deepEqual(await git.ticketBranches(main, 7), []);
     assert.equal(sh(main, 'ls-remote', '--heads', 'origin', 'ticket/7-no-wt').trim(), '');
     assert.equal((await git.ticketBranches(main, 70)).length, 1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('retryStuckTickets resets only the named tickets and returns them ready, leaving other in-progress tickets untouched', async () => {
+  const { calls, opts } = fakeReset({ branches: [wtBranch] });
+  const labels = { 7: ['in-progress'], 8: ['in-progress'], 9: [] };
+  opts.gh.editLabels = async (n, change) => { calls.push(['editLabels', n, change]); labels[n] = labels[n].filter((l) => !change.remove?.includes(l)); };
+  opts.gh.viewIssue = async (n) => issue(n, labels[n]);
+  const subs = [{ number: 7 }, { number: 8 }, { number: 9 }];
+  const tickets = await Promise.all(subs.map((s) => opts.gh.viewIssue(s.number)));
+  const after = await run.retryStuckTickets([7], tickets, subs, { ...opts, ev() {} });
+  assert.deepEqual(calls.filter((c) => c[0] === 'ticketBranches'), [['ticketBranches', 7]]);
+  assert.deepEqual(calls.filter((c) => c[0] === 'editLabels').map((c) => c[1]), [7]);
+  assert.deepEqual(after.filter(gh.isReady).map((t) => t.number), [7, 9]); // 8 stays in-progress
+});
+
+test('retryStuckTickets validates before touching anything', async () => {
+  const { calls, opts } = fakeReset({ branches: [wtBranch] });
+  const tickets = [issue(7, ['in-progress']), issue(9)];
+  await assert.rejects(run.retryStuckTickets([7, 9], tickets, [], { ...opts, ev() {} }), /#9/);
+  assert.deepEqual(calls, []);
+});
+
+test('after discardBranch, ensureWorktree starts the ticket again from the base branch, not the old attempt', async () => {
+  const { mkdtempSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { execFileSync } = await import('node:child_process');
+  const git = await import('../lib/git.mjs');
+  const root = mkdtempSync(join(tmpdir(), 'ff-fresh-'));
+  try {
+    const sh = (cwd, ...args) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd, encoding: 'utf8' }).trim();
+    sh(root, 'init', '--bare', '-b', 'main', 'origin.git');
+    sh(root, 'clone', 'origin.git', 'main');
+    const main = join(root, 'main');
+    sh(main, 'commit', '--allow-empty', '-m', 'init');
+    sh(main, 'push', 'origin', 'HEAD:main');
+    const base = sh(main, 'rev-parse', 'HEAD');
+    const opts = { mainRoot: main, path: join(root, 'wt7'), branch: 'ticket/7-thing', base: 'main' };
+    const first = await git.ensureWorktree(opts);
+    sh(first.path, 'commit', '--allow-empty', '-m', 'test: old attempt');
+    assert.notEqual(sh(first.path, 'rev-parse', 'HEAD'), base);
+    for (const b of await git.ticketBranches(main, 7)) await git.discardBranch(main, b);
+    const second = await git.ensureWorktree(opts);
+    assert.equal(sh(second.path, 'rev-parse', 'HEAD'), base);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

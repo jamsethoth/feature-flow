@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mergeConfig, parseCommands, loadConfig, loadPersona, budgetFor } from '../lib/config.mjs';
 import { topoSort } from '../lib/publish.mjs';
 import { isReady } from '../lib/github.mjs';
-import { stageForRound, pool, cleanupMerged } from '../lib/run.mjs';
+import { stageForRound, pool, cleanupMerged, checkRed } from '../lib/run.mjs';
 import { codexUsage, recordedSandbox, apiCost, lastQuotaPct } from '../lib/adapters.mjs';
 import { styleBlock } from '../lib/stages.mjs';
 import { withPrefixedTwins, claudeToolkit, findClaudePlugin, codexMcpServers, codexPlugins, codexToolkit, claudeTrusted, grantClaudeTrust } from '../lib/toolkit.mjs';
@@ -483,4 +483,26 @@ test('pool never exceeds its limit and keeps result order', async () => {
   });
   assert.equal(peak, 2);
   assert.deepEqual(res, [10, 20, 30, 40, 50]);
+});
+
+test('red gate: a timed-out run is rejected even if it printed the test name', () => {
+  const r = checkRed({ code: null, timedOut: true, output: 'not ok - rejects bad input' }, ['rejects bad input']);
+  assert.equal(r.ok, false);
+  assert.match(r.reason, /timed out/i);
+});
+
+test('red gate: runner-not-found is rejected', () => {
+  const r = checkRed({ code: 127, output: 'rejects bad input\n[ff: could not start command (win32 error 2)]\n' }, ['rejects bad input']);
+  assert.equal(r.ok, false);
+  assert.match(r.reason, /could not start|not found/i);
+});
+
+test('red gate: nonzero exit without the reported test names is rejected', () => {
+  const r = checkRed({ code: 1, output: 'SyntaxError: unexpected token' }, ['rejects bad input']);
+  assert.equal(r.ok, false);
+  assert.match(r.reason, /rejects bad input/);
+});
+
+test('red gate: nonzero exit naming a reported failing test is accepted', () => {
+  assert.deepEqual(checkRed({ code: 1, output: 'not ok 1 - rejects bad input' }, ['rejects bad input']), { ok: true });
 });

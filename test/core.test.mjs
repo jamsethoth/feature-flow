@@ -762,7 +762,7 @@ function toolFixtures() {
   mkdirSync(join(home, 'plugins'), { recursive: true });
   mkdirSync(pony);
   writeFileSync(join(home, 'plugins', 'installed_plugins.json'), JSON.stringify({ plugins: { 'ponytail@mkt': [{ installPath: pony }] } }));
-  return { home, cwd: home, codexListings: async () => ({ plugins: ['ponytail@mkt'], mcp: [] }) };
+  return { home, cwd: home, codexListings: async () => ({ plugins: ['ponytail@mkt'], mcp: [] }), modeText: (m) => (m === 'ponytail' ? 'PONY' : null) };
 }
 
 // Every gh method records its call and throws, so a run that gets past the preflight stops at its first gh call.
@@ -812,6 +812,34 @@ test('runEpic preflight surfaces a resolver error with the stage named', async (
   const { err, calls } = await preflight({}, {}, tools);
   assert.match(err?.message ?? '', /stage tools not found: .*review: .*boom/);
   assert.deepEqual(calls, []);
+});
+
+test('runEpic preflight stops on an unknown hook before any worktree', async () => {
+  const { err, calls, root, worktrees } = await preflight({}, { toolkit: { claude: { hooks: ['nope'] } } });
+  assert.match(err?.message ?? '', /stage tools not found: .*implement: .*hook nope \(unknown\)/);
+  assert.deepEqual(calls, []);
+  assert.equal(worktrees, 1);
+  assert.equal(existsSync(join(root, 'wt')), false);
+});
+
+test('resolveStageTools reports unknown Claude hooks and missing Codex inject modes', async () => {
+  const cfg = loadConfig(null);
+  cfg.toolkit.claude.hooks = ['nope'];
+  cfg.toolkit.codex.inject = ['nomode'];
+  assert.equal(cfg.implement.cli, 'claude');
+  assert.equal(cfg.review.cli, 'codex');
+  let looked = [];
+  const fx = { ...toolFixtures(), modeText: (m) => { looked.push(m); return null; } };
+  assert.ok((await toolkitMod.resolveStageTools(cfg, 'implement', fx)).missing.includes('hook nope (unknown)'));
+  assert.ok((await toolkitMod.resolveStageTools(cfg, 'review', fx)).missing.includes('mode nomode'));
+  assert.deepEqual(looked, ['nomode']);
+});
+
+test('toolsChecks skips escalate when escalationEnabled is false', async () => {
+  const cfg = loadConfig(null);
+  cfg.escalationEnabled = false;
+  const resolve = async (c, s) => { assert.notEqual(s, 'escalate'); return { tools: {}, args: [], missing: [] }; };
+  assert.deepEqual(toolsRow(await toolkitMod.toolsChecks(cfg, resolve), 'escalate'), ['ok', 'skipped (escalationEnabled is false)']);
 });
 
 test('resolveStageTools resolves nothing for plan', async () => {

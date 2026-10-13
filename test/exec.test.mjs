@@ -71,8 +71,30 @@ setTimeout(() => {}, 60000);
   assert.ok(!stillAlive, 'grandchild should be killed with the tree');
 });
 
-test('killTree: reports a failed termination instead of swallowing it', () => {
-  assert.ok(killTree(2 ** 22 + 12345), 'a missing process should yield an error message');
+test('killTree: reports a failed termination instead of swallowing it', async () => {
+  assert.ok(await killTree(2 ** 22 + 12345), 'a missing process should yield an error message');
+});
+
+test('runShell: a hanging killer cannot push the return past the allowance', async () => {
+  const sleeper = script('sleeper.mjs', `setTimeout(() => {}, 8000);`);
+  const t0 = Date.now();
+  const res = await runShell(`node "${sleeper}"`, { timeoutMs: 500, killer: () => new Promise(() => {}) });
+  assert.ok(Date.now() - t0 < 2500, 'should return within ~2s of the timeout');
+  assert.equal(res.timedOut, true);
+  assert.ok(res.killError);
+});
+
+test('runShell: when tree termination fails the calling process can still exit promptly', async () => {
+  const sleeper = script('sleeper2.mjs', `setTimeout(() => {}, 8000);`);
+  const caller = script('caller.mjs', `
+import { runShell } from ${JSON.stringify(new URL('../lib/exec.mjs', import.meta.url).href)};
+const r = await runShell('node "${sleeper}"', { timeoutMs: 300, killer: async () => 'boom' });
+console.log(r.killError);
+`);
+  const t0 = Date.now();
+  const res = await run(process.execPath, [caller]);
+  assert.equal(res.stdout.trim(), 'boom');
+  assert.ok(Date.now() - t0 < 5000, 'caller should exit without waiting for the surviving child');
 });
 
 test('run: failure message keeps the child stderr even with a several-KB argument list', async () => {

@@ -215,8 +215,9 @@ test('loadConfig rejects replaced stageSkills / toolkit.claude.plugins keys, nam
   assert.throws(() => loadConfig(layer({ stageSkills: {} })), (e) => e.message.includes('stageSkills') && e.message.includes('stageTools.<stage>.skills'));
   assert.throws(() => loadConfig(layer({ toolkit: { claude: { plugins: [] } } })),
     (e) => e.message.includes('toolkit.claude.plugins') && e.message.includes('stageTools.<stage>.plugins'));
+  // One line: ff doctor shows only an error's first line.
   assert.throws(() => loadConfig(layer({ stageSkills: {}, toolkit: { claude: { plugins: [] } } })),
-    (e) => e.message.includes('stageSkills') && e.message.includes('toolkit.claude.plugins'));
+    (e) => { const first = e.message.split('\n')[0]; return first.includes('stageSkills') && first.includes('toolkit.claude.plugins'); });
 });
 
 const SHIPPED_STAGE_TOOLS = {

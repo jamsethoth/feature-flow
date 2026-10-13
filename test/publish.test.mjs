@@ -61,6 +61,12 @@ test('createIssue throws when gh does not return an issue URL', async () => {
   await assert.rejects(github.createIssue({ title: 't', body: 'b' }, '.', runGh), /issue URL/i);
 });
 
+test('createIssue rejects non-URL output that merely ends in /issues/N', async () => {
+  for (const out of ['not a URL /issues/42', '/issues/42']) {
+    await assert.rejects(github.createIssue({ title: 't', body: 'b' }, '.', async () => out), /issue URL/i);
+  }
+});
+
 test('createIssue returns the issue number from the URL', async () => {
   const runGh = async () => 'https://github.com/o/r/issues/42\n';
   assert.equal(await github.createIssue({ title: 't', body: 'b' }, '.', runGh), 42);

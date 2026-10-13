@@ -351,14 +351,33 @@ test('codexToolkit enables listed plugins and disables every other installed one
   assert.deepEqual(codexToolkit({}, { plugins: ['x'] }, codexListing(['x@a', 'x@b'])).missing, ['plugin x ambiguous: x@a, x@b']);
 });
 
-test('codexToolkit disables every listed MCP server whatever the stage mcp list says', () => {
-  const { args } = codexToolkit({}, { mcp: ['playwright'], plugins: [] }, codexListing([], ['playwright', 'node_repl', 'my server']));
-  assert.ok(args.includes('mcp_servers={"playwright"={enabled=false},"node_repl"={enabled=false},"my server"={enabled=false}}'), args.join(' '));
-  assert.ok(!args.some((a) => a.startsWith('mcp_servers.')), args.join(' '));
+test('Codex MCP allowlist enables listed and disables unlisted servers in the one mcp_servers inline table', () => {
+  const { args, missing } = codexToolkit({}, { mcp: ['playwright'], plugins: [] }, codexListing([], ['playwright', 'node_repl', 'my server']));
+  const i = args.indexOf('mcp_servers={"playwright"={enabled=true},"node_repl"={enabled=false},"my server"={enabled=false}}');
+  assert.ok(i > 0 && args[i - 1] === '-c', args.join(' '));
+  assert.deepEqual(missing, []);
+  assert.ok(!args.some((a) => a.includes('mcp_servers.')), args.join(' '));
+  assert.ok(codexToolkit({}, {}, codexListing([], ['playwright', 'node_repl'])).args
+    .includes('mcp_servers={"playwright"={enabled=false},"node_repl"={enabled=false}}'));
   // TOML forbids a raw DEL in strings; JSON.stringify leaves it as is.
   assert.ok(codexToolkit({}, {}, codexListing([], ['x\u007fy'])).args.includes('mcp_servers={"x\\u007fy"={enabled=false}}'));
   // Nothing installed: no empty tables.
   assert.deepEqual(codexToolkit({}, {}, codexListing([])).args, ['-c', 'features.remote_plugin=false']);
+});
+
+test('Unknown Codex MCP server is reported missing', () => {
+  const { args, missing } = codexToolkit({}, { mcp: ['ghost', 'playwright'] }, codexListing([], ['playwright']));
+  assert.deepEqual(missing, ['mcp ghost']);
+  assert.ok(args.includes('mcp_servers={"playwright"={enabled=true}}'), args.join(' '));
+});
+
+test('useUserConfig false reports listed MCP servers missing without running listings', async () => {
+  assert.deepEqual(codexToolkit({ useUserConfig: false }, { mcp: ['playwright'] }).missing, ['mcp playwright (useUserConfig is false)']);
+  let ran = 0;
+  const cfg = { review: { cli: 'codex' }, toolkit: { codex: { useUserConfig: false } }, stageTools: { review: { mcp: ['playwright'] } } };
+  const r = await toolkitMod.resolveStageTools(cfg, 'review', { codexListings: async () => { ran++; return codexListing([]); } });
+  assert.deepEqual(r.missing, ['mcp playwright (useUserConfig is false)']);
+  assert.equal(ran, 0);
 });
 
 test('codexToolkit passes the Windows sandbox mode and hook switch', () => {

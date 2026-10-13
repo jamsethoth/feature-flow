@@ -9,7 +9,7 @@ import * as git from '../lib/git.mjs';
 import * as run from '../lib/run.mjs';
 
 // A disposable origin + clone with the minimal config and AGENTS.md that runEpic needs.
-function epicRepo() {
+function epicRepo(testCommand = 'node -e 0') {
   const root = mkdtempSync(join(tmpdir(), 'ff-e2e-'));
   const sh = (cwd, ...args) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd, encoding: 'utf8' }).trim();
   sh(root, 'init', '--bare', '-b', 'main', 'origin.git');
@@ -17,7 +17,8 @@ function epicRepo() {
   const main = join(root, 'repo');
   mkdirSync(join(main, '.agents', 'feature-flow'), { recursive: true });
   writeFileSync(join(main, '.agents', 'feature-flow', 'feature-flow.json'), JSON.stringify({ planApproval: false, worktreeRoot: join(root, 'wts') }));
-  writeFileSync(join(main, 'AGENTS.md'), '## Commands\n\n- test: `node -e 0`\n');
+  writeFileSync(join(main, 'AGENTS.md'), `## Commands\n\n- test: \`${testCommand}\`\n`);
+  writeFileSync(join(main, 'fail.mjs'), "console.log('not ok 1 - rejects bad input');process.exit(1);\n");
   sh(main, 'add', '-A');
   sh(main, 'commit', '-m', 'init');
   sh(main, 'push', 'origin', 'HEAD:main');
@@ -111,4 +112,46 @@ test('a crashed ticket keeps the reason from the later lines of the error in the
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+// Drives a ticket through the red gate only: the agent "writes" a test file and reports names, green never passes.
+async function redRun(testCommand, tests) {
+  const { root, sh, main } = epicRepo(testCommand);
+  try {
+    const issue = (n) => ({ number: n, title: `Ticket ${n}`, state: 'OPEN', labels: [], blockedBy: [], subIssues: n === 1 ? [{ number: 9 }] : [] });
+    const gh = { ...realGh, viewIssue: async (n) => issue(n), findPr: async () => undefined, editLabels: async () => '', commentIssue: async () => {} };
+    const prompts = [];
+    const invoke = async ({ cwd, prompt }) => {
+      prompts.push(prompt);
+      writeFileSync(join(cwd, 'new.test.mjs'), '// test\n');
+      return { out: { status: 'ok', summary: 's', notes: '', tests }, usage: { input: 0, cached: 0, output: 0 }, session: 's' };
+    };
+    await run.runEpic(1, { cwd: main, print() {}, deps: { gh, invoke } });
+    const events = readFileSync(join(main, '.git', 'feature-flow', 'events.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+    const subjects = sh(main, 'log', '--format=%s', 'ticket/9-ticket-9').split('\n');
+    return { events, prompts, subjects };
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+test('a red gate whose runner cannot start is not committed; red_failed records the reason and the next attempt sees it', async () => {
+  const { events, prompts, subjects } = await redRun('ff-no-such-runner-xyz', ['rejects bad input']);
+  assert.ok(!subjects.some((s) => s.startsWith('test:')), 'no test: commit');
+  const failed = events.filter((e) => e.type === 'red_failed');
+  assert.ok(failed.length >= 2);
+  assert.ok(failed[0].reason);
+  assert.ok(prompts.some((p) => p.includes(failed[0].reason)), 'history carries the reason into the next red prompt');
+});
+
+test('a red gate whose output names none of the reported tests is not committed', async () => {
+  const { events, subjects } = await redRun('node fail.mjs', ['some other test']);
+  assert.ok(!subjects.some((s) => s.startsWith('test:')));
+  assert.match(events.find((e) => e.type === 'red_failed').reason, /does not mention any reported failing test/);
+});
+
+test('a red gate with a nonzero exit naming a reported test is committed as test:', async () => {
+  const { events, subjects } = await redRun('node fail.mjs', ['rejects bad input']);
+  assert.ok(subjects.some((s) => s.startsWith('test:')));
+  assert.ok(!events.some((e) => e.type === 'red_failed'));
 });

@@ -341,3 +341,56 @@ test('a failing diff stat is logged and not recorded as zeros', async () => {
   assert.ok(logs.some((m) => m.includes('bad ref')));
   assert.equal((await safeDiffStats(async () => '1\t2\ta.mjs\n', () => {})).insertions, 1);
 });
+
+test('acquireLock refuses a live owner, replaces a dead one and releases only its own lock', async () => {
+  const { acquireLock } = await import('../lib/run.mjs');
+  const dir = mkdtempSync(join(tmpdir(), 'ff-acq-'));
+  const release = acquireLock(dir, 5);
+  assert.throws(() => acquireLock(dir, 5, () => true), /another ff run/);
+  release();
+  assert.throws(() => readFileSync(join(dir, '5.lock')), 'released');
+  writeFileSync(join(dir, '5.lock'), JSON.stringify({ pid: 1 }));
+  const second = acquireLock(dir, 5, () => false);
+  writeFileSync(join(dir, '5.lock'), JSON.stringify({ pid: 1 }));
+  second();
+  assert.equal(JSON.parse(readFileSync(join(dir, '5.lock'), 'utf8')).pid, 1, "another run's lock survives");
+});
+
+test('exit code is non-zero for a failed label update or a leftover in-progress ticket', async () => {
+  const { exitCodeFor, setLabels } = await import('../lib/run.mjs');
+  assert.notEqual(exitCodeFor([{ ticket: 1, state: 'ready-for-qa', labelFailed: true }]), 0);
+  assert.notEqual(exitCodeFor([{ ticket: 1, state: 'ready-for-qa' }, { ticket: 2, state: 'in-progress' }]), 0);
+  const noop = () => {};
+  assert.equal(await setLabels(1, {}, { edit: async () => {}, log: noop, ev: noop }), true);
+  assert.equal(await setLabels(1, {}, { edit: async () => { throw new Error('x'); }, log: noop, ev: noop }), false);
+});
+
+test('runEpic reports a stuck ticket and recovers it only with retryStuck', async () => {
+  const { runEpic, exitCodeFor } = await import('../lib/run.mjs');
+  const dir = mkdtempSync(join(tmpdir(), 'ff-epic-'));
+  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: dir });
+  writeFileSync(join(dir, 'AGENTS.md'), '# x\n\n## Commands\n\n- test: `npm test`\n');
+  const names = (l) => l.map((name) => ({ name }));
+  const exercise = async (retryStuck) => {
+    let labels = ['ff:ticket', 'in-progress'];
+    const edits = [], ran = [];
+    const deps = {
+      gh: {
+        viewIssue: async (n) => (n === 5 ? { number: 5, state: 'OPEN', labels: names(['plan-approved']), subIssues: [{ number: 1 }] }
+          : { number: 1, state: 'OPEN', labels: names(labels), blockedBy: [] }),
+        editLabels: async (n, { remove = [] }) => { edits.push({ n, remove }); labels = labels.filter((l) => !remove.includes(l)); },
+      },
+      runTicket: async (t) => { ran.push(t.number); return { ticket: t.number, state: 'ready-for-qa' }; },
+    };
+    const results = await runEpic(5, { cwd: dir, print: () => {}, retryStuck, deps });
+    return { results, edits, ran };
+  };
+  const plain = await exercise(false);
+  assert.deepEqual(plain.ran, []);
+  assert.deepEqual(plain.edits, []);
+  assert.notEqual(exitCodeFor(plain.results), 0);
+  const retried = await exercise(true);
+  assert.deepEqual(retried.edits, [{ n: 1, remove: ['in-progress'] }]);
+  assert.deepEqual(retried.ran, [1]);
+  assert.equal(exitCodeFor(retried.results), 0);
+});

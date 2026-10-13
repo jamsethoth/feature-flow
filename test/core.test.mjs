@@ -290,6 +290,7 @@ const listRunner = (plugins, mcp, calls = {}) => async (cmd, args) => {
   calls[key] = (calls[key] ?? 0) + 1;
   if (key === 'plugin list') return { stdout: typeof plugins === 'string' ? plugins : JSON.stringify(plugins) };
   if (key === 'mcp list') return { stdout: typeof mcp === 'string' ? mcp : JSON.stringify(mcp) };
+  if (key === 'debug prompt-input') return { stdout: JSON.stringify('- caveman: Terse. (file: C:/s/caveman/SKILL.md)\n') };
   throw new Error(`unexpected ${cmd} ${args.join(' ')}`);
 };
 const codexListing = (plugins, mcp = []) => ({ plugins, mcp });
@@ -805,7 +806,8 @@ function toolFixtures() {
   mkdirSync(join(home, 'plugins'), { recursive: true });
   mkdirSync(pony);
   writeFileSync(join(home, 'plugins', 'installed_plugins.json'), JSON.stringify({ plugins: { 'ponytail@mkt': [{ installPath: pony }] } }));
-  return { home, cwd: home, codexListings: async () => ({ plugins: ['ponytail@mkt'], mcp: [] }) };
+  return { home, cwd: home, codexListings: async () => ({ plugins: ['ponytail@mkt'], mcp: [] }),
+    codexSkills: async () => [{ name: 'mattpocock-skills:code-review', file: 'C:/s/code-review/SKILL.md' }] };
 }
 
 // Every gh method records its call and throws, so a run that gets past the preflight stops at its first gh call.

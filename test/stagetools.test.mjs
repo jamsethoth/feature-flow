@@ -112,12 +112,15 @@ test('stageTools (codex): unknown plugin is missing, ambiguous bare name lists b
   assert.ok(r.missing.includes('plugin ghost'));
 });
 
-test('stageTools (codex): every listed MCP server, including plugin-provided ones, is disabled', async () => {
+test('stageTools (codex): MCP is an allowlist; every other listed server, including plugin-provided ones, is disabled', async () => {
   const codexJson = codexFixture({ mcp: JSON.stringify([{ name: 'context7' }, { name: 'github-plugin-server' }]) });
-  const r = await stageTools(stageCfg('codex', [], { mcp: ['context7'] }), 'implement', { codexJson });
-  assert.ok(r.args.includes('mcp_servers.context7.enabled=false'));
+  const r = await stageTools(stageCfg('codex', [], { mcp: ['context7', 'ghost'] }), 'implement', { codexJson });
+  assert.ok(r.args.includes('mcp_servers.context7.enabled=true'));
   assert.ok(r.args.includes('mcp_servers.github-plugin-server.enabled=false'));
-  assert.equal(r.args.some((a) => a.startsWith('mcp_servers.') && a.endsWith('.enabled=true')), false);
+  assert.deepEqual(r.missing, ['mcp ghost']);
+  const none = await stageTools(stageCfg('codex', []), 'implement', { codexJson });
+  assert.equal(none.args.some((a) => a.startsWith('mcp_servers.') && a.endsWith('.enabled=true')), false);
+  assert.ok(none.args.includes('mcp_servers.context7.enabled=false'));
 });
 
 test('stageTools (codex): a failing or unparsable listing throws, never yields an empty list', async () => {

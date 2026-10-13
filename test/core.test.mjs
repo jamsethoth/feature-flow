@@ -771,6 +771,19 @@ test('planner persona writes plans to the plans folder, not the git dir', () => 
   assert.ok(!md.includes('feature-flow/plans'));
 });
 
+test('ff plan creates the plans folder before launching the planner', () => {
+  const home = mkdtempSync(join(tmpdir(), 'ff-planhome-'));
+  const repo = join(mkdtempSync(join(tmpdir(), 'ff-planrepo-')), 'myrepo');
+  mkdirSync(join(repo, '.agents', 'feature-flow'), { recursive: true });
+  // An unknown plan cli makes interactiveArgs throw after the folder is made and before anything is launched.
+  writeFileSync(join(repo, '.agents', 'feature-flow', 'feature-flow.json'), JSON.stringify({ plan: { cli: 'none' } }));
+  execFileSync('git', ['init', '-q'], { cwd: repo });
+  const env = { ...process.env, HOME: home, USERPROFILE: home };
+  assert.throws(() => execFileSync(process.execPath, [fileURLToPath(new URL('../bin/ff.mjs', import.meta.url)), 'plan', 'x'], { cwd: repo, env, stdio: 'pipe' }),
+    (e) => /no interactive launcher/.test(String(e.stderr)));
+  assert.ok(existsSync(join(home, '.agents', 'feature-flow', 'plans', 'myrepo')));
+});
+
 // Stage-tools preflight. Fixture Claude home has ponytail installed; the fake Codex listing has it too.
 function toolFixtures() {
   const home = mkdtempSync(join(tmpdir(), 'ff-home-'));

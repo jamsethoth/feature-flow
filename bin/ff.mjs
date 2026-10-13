@@ -6,7 +6,7 @@ import { run } from '../lib/exec.mjs';
 import { interactiveArgs } from '../lib/adapters.mjs';
 import { repoInfo } from '../lib/git.mjs';
 import { runEpic, runStages, codexDesktopLock, codexSandboxRaces, CODEX_LOCK_WARNING } from '../lib/run.mjs';
-import { claudeToolkit, codexToolkit, stageTools, skillsBlock, claudeTrusted, grantClaudeTrust, TRUST_HINT } from '../lib/toolkit.mjs';
+import { claudeToolkit, codexToolkit, toolsDetail, skillsBlock, claudeTrusted, grantClaudeTrust, TRUST_HINT } from '../lib/toolkit.mjs';
 import { eventLog, readEvents } from '../lib/events.mjs';
 import { summarize, renderSummary, refreshOutcomes } from '../lib/stats.mjs';
 import { runEval } from '../lib/eval.mjs';
@@ -75,12 +75,7 @@ async function doctor() {
     return (cfg.toolkit?.claude?.hooks ?? []).join(', ') || 'none';
   });
   if (cfg) {
-    checks.push(['tools plan', 'ok', 'ignored (interactive)']);
-    for (const s of runStages(cfg)) await check(`tools ${s}`, async () => {
-      const r = await stageTools(cfg, s);
-      if (r.missing.length) throw new Error(`not found: ${r.missing.join(', ')}`);
-      return Object.entries(r.tools).map(([k, v]) => `${k}: ${v.join(', ') || 'none'}`).join('; ');
-    });
+    for (const s of ['plan', ...runStages(cfg)]) await check(`tools ${s}`, () => toolsDetail(cfg, s));
   }
   if (clis.has('codex') && cfg) await check('codex toolkit', async () => {
     const tk = codexToolkit(cfg.toolkit?.codex);

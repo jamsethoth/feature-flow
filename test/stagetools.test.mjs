@@ -6,11 +6,11 @@ import * as runMod from '../lib/run.mjs';
 import { mkdtempSync, mkdirSync, writeFileSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 
 // Namespace access so a missing export fails its own test, not the whole file.
 const { findClaudePlugin, skillsBlock } = toolkit;
+const toolsDetail = (...a) => toolkit.toolsDetail(...a);
 const stageTools = (...a) => toolkit.stageTools(...a);
 const runTicket = (...a) => runMod.runTicket(...a);
 const runEpic = (...a) => runMod.runEpic(...a);
@@ -112,15 +112,34 @@ test('stageTools (codex): unknown plugin is missing, ambiguous bare name lists b
   assert.ok(r.missing.includes('plugin ghost'));
 });
 
-test('stageTools (codex): MCP is an allowlist; every other listed server, including plugin-provided ones, is disabled', async () => {
+test('stageTools (codex): every listed server, including plugin-provided ones, is disabled whatever mcp says', async () => {
   const codexJson = codexFixture({ mcp: JSON.stringify([{ name: 'context7' }, { name: 'github-plugin-server' }]) });
-  const r = await stageTools(stageCfg('codex', [], { mcp: ['context7', 'ghost'] }), 'implement', { codexJson });
-  assert.ok(r.args.includes('mcp_servers.context7.enabled=true'));
-  assert.ok(r.args.includes('mcp_servers.github-plugin-server.enabled=false'));
-  assert.deepEqual(r.missing, ['mcp ghost']);
-  const none = await stageTools(stageCfg('codex', []), 'implement', { codexJson });
-  assert.equal(none.args.some((a) => a.startsWith('mcp_servers.') && a.endsWith('.enabled=true')), false);
-  assert.ok(none.args.includes('mcp_servers.context7.enabled=false'));
+  for (const mcp of [[], ['context7', 'ghost']]) {
+    const r = await stageTools(stageCfg('codex', [], { mcp }), 'implement', { codexJson });
+    assert.ok(r.args.includes('mcp_servers.context7.enabled=false'));
+    assert.ok(r.args.includes('mcp_servers.github-plugin-server.enabled=false'));
+    assert.equal(r.args.some((a) => a.startsWith('mcp_servers.') && a.endsWith('.enabled=true')), false);
+    assert.deepEqual(r.missing, []);
+  }
+});
+
+test('stageTools: Claude MCP config adds no args and no missing entries', async () => {
+  const { home } = claudeHome([]);
+  const r = await stageTools(stageCfg('claude', [], { mcp: ['whatever'] }), 'implement', { claudeHome: home });
+  assert.deepEqual(r.args, []);
+  assert.deepEqual(r.missing, []);
+});
+
+test('stageTools (codex): useUserConfig=false cannot load plugins, so a listed one is missing', async () => {
+  const cfg = stageCfg('codex', ['no-such-plugin']);
+  cfg.toolkit.codex.useUserConfig = false;
+  const r = await stageTools(cfg, 'implement', { codexJson: () => { throw new Error('must not list'); } });
+  assert.match(r.missing[0], /plugin no-such-plugin/);
+});
+
+test('run_start config summary carries stageTools', () => {
+  const cfg = loadConfig(null);
+  assert.deepEqual(runMod.configSummary(cfg).stageTools, cfg.stageTools);
 });
 
 test('stageTools (codex): a failing or unparsable listing throws, never yields an empty list', async () => {
@@ -169,12 +188,15 @@ test('runEpic stops before any worktree when a stage plugin is missing, naming s
   assert.equal(existsSync(join(root, 'wts')), false);
 });
 
-test('ff doctor: one tools line per stage; plan ignores a nonexistent plugin', () => {
-  const root = repoWithConfig({ stageTools: { plan: { plugins: ['no-such-plugin'] } } });
-  execFileSync('git', ['init', '-q', root]);
-  let out;
-  try { out = execFileSync(process.execPath, [fileURLToPath(new URL('../bin/ff.mjs', import.meta.url)), 'doctor'], { cwd: root, encoding: 'utf8', stdio: 'pipe' }); } catch (e) { out = String(e.stdout); }
-  for (const s of ['plan', 'implement', 'review']) assert.match(out, new RegExp(`tools ${s}\\b`), `tools ${s} line`);
-  assert.match(out, /^ok\s+tools plan\s.*ignored \(interactive\)/m);
-  assert.doesNotMatch(out, /^FAIL\s+tools plan/m);
+test('toolsDetail: plan shows skills and never resolves plugins; ignored note only when mcp/plugins are listed', async () => {
+  const cfg = (plan) => ({ ...stageCfg('claude', []), plan: { cli: 'claude' }, stageTools: { plan } });
+  const note = await toolsDetail(cfg({ skills: ['s:one'], mcp: [], plugins: ['no-such-plugin'] }), 'plan', { claudeHome: claudeHome([]).home });
+  assert.equal(note, 'skills=s:one; plugins=no-such-plugin; mcp=; mcp/plugins ignored (interactive)');
+  assert.equal(await toolsDetail(cfg({ skills: ['s:one'], mcp: [], plugins: [] }), 'plan'), 'skills=s:one; plugins=; mcp=');
+});
+
+test('toolsDetail: a headless stage reports its tools, or throws naming what is not found', async () => {
+  const { home } = claudeHome(['alpha@mkt']);
+  assert.equal(await toolsDetail(stageCfg('claude', ['alpha']), 'implement', { claudeHome: home }), 'skills=tdd; plugins=alpha; mcp=');
+  await assert.rejects(toolsDetail(stageCfg('claude', ['nope']), 'implement', { claudeHome: home }), /not found: plugin nope/);
 });

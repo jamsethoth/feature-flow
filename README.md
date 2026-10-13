@@ -116,6 +116,7 @@ Layers, later wins: `defaults/feature-flow.json` (this package) → `~/.agents/f
 | `planApproval` | `true` | `ff run` waits for the `plan-approved` label |
 | `escalationEnabled` | `false` | one `escalate` attempt after review rounds run out |
 | `maxParallel` | `2` | tickets worked at once |
+| `stuckAfterHours` | `6` | `ff run` lists tickets `in-progress` longer than this as possibly stuck; re-run them with `--retry-stuck <ticket#>[,...]` |
 | `maxReviewRounds` | `2` | fix rounds after the first attempt |
 | `baseBranch` | `main` | PR base |
 | `worktreeRoot` | `~/worktrees` | ticket worktrees at `<root>/<repo>/ticket-<n>` |

@@ -224,3 +224,29 @@ test('after discardBranch, ensureWorktree starts the ticket again from the base 
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+const ghFailure = () => new Error("gh issue edit 7 --add-label in-progress exited 1\nfailed to update https://github.com/o/r/issues/7: 'in-progress' not found");
+
+test('setLabels keeps the reason from the later lines of the error in the log and the event', async () => {
+  const logs = [], events = [];
+  const gh = { editLabels: async () => { throw ghFailure(); } };
+  await run.setLabels(gh, 7, { add: ['in-progress'] }, '/repo', { log: (m) => logs.push(m), ev: (t, d) => events.push([t, d]) });
+  assert.ok(logs.some((l) => l.includes("'in-progress' not found")));
+  assert.ok(events.some(([t, d]) => t === 'label_failed' && d.error.includes("'in-progress' not found")));
+});
+
+test('loadStuckAges and safeDiffStats keep the reason from the later lines of the error', async () => {
+  const logs = [];
+  const gh = { labelNames: (t) => t.labels.map((l) => l.name), inProgressSince: async () => { throw ghFailure(); } };
+  await run.loadStuckAges([issue(7, ['in-progress'])], gh, '/repo', (m) => logs.push(m));
+  await run.safeDiffStats({ numstat: async () => { throw ghFailure(); } }, '/wt', 'origin/main', (m) => logs.push(m));
+  assert.equal(logs.length, 2);
+  assert.ok(logs.every((l) => l.includes("'in-progress' not found")));
+});
+
+test('error excerpts are bounded', async () => {
+  const logs = [];
+  const gh = { editLabels: async () => { throw new Error(`first\n${'x'.repeat(5000)}`); } };
+  await run.setLabels(gh, 7, {}, '/repo', { log: (m) => logs.push(m), ev() {} });
+  assert.ok(logs[0].length < 500);
+});

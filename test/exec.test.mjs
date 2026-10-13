@@ -10,11 +10,15 @@ const script = (name, body) => { const p = join(tmp, name); writeFileSync(p, bod
 const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 const waitFor = async (fn, ms = 5000) => { const end = Date.now() + ms; while (Date.now() < end && !fn()) await new Promise((r) => setTimeout(r, 50)); return fn(); };
 
-// Parent spawns a detached grandchild through an intermediate that exits at once, then outlives the timeout.
+// Only a restricted sandbox may refuse cleanup; there survivors need only be reported.
+const sandboxed = process.env.FF_TEST_SANDBOXED === '1';
+
+// Parent spawns a detached grandchild through an intermediate that lingers ~2 s (so the watcher sees the chain) and
+// then exits, leaving the grandchild orphaned while the parent outlives the timeout.
 function orphanScripts(name) {
   const pidFile = join(tmp, `${name}.pid`);
   const grandchild = script(`${name}-gc.mjs`, `import { writeFileSync } from 'node:fs'; writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setTimeout(() => {}, 60000);`);
-  const middle = script(`${name}-mid.mjs`, `import { spawn } from 'node:child_process'; spawn(process.execPath, [${JSON.stringify(grandchild)}], { detached: true, stdio: 'ignore' }).unref();`);
+  const middle = script(`${name}-mid.mjs`, `import { spawn } from 'node:child_process'; spawn(process.execPath, [${JSON.stringify(grandchild)}], { detached: true, stdio: 'ignore' }).unref(); setTimeout(() => {}, 2000);`);
   const top = script(`${name}-top.mjs`, `import { spawn } from 'node:child_process'; spawn(process.execPath, [${JSON.stringify(middle)}], { stdio: 'ignore' }); setTimeout(() => {}, 60000);`);
   return { pidFile, cmd: `"${process.execPath}" "${top}"` };
 }
@@ -50,18 +54,16 @@ test('runShell: a command outliving timeoutMs returns within budget, flagged as 
   assert.equal(res.timedOut, true);
 });
 
-test('runShell timeout kills descendants by PID, including one whose parent already exited (unless the sandbox forbids it)', async () => {
+test('runShell timeout kills descendants by PID, including one whose parent already exited', async () => {
   const { pidFile, cmd } = orphanScripts('orphan');
-  const res = await runShell(cmd, { timeoutMs: 1500 });
+  const res = await runShell(cmd, { timeoutMs: 3500 });
   assert.equal(res.timedOut, true);
   assert.ok(await waitFor(() => existsSync(pidFile), 1000), 'grandchild never started');
   const pid = Number(readFileSync(pidFile, 'utf8'));
   try {
-    const survivors = res.survivors ?? [];
-    if (survivors.length) {
-      // sandboxed: cleanup may be refused, but it must be reported rather than claimed
-      assert.ok(survivors.some((s) => s.pid === pid));
-    } else {
+    if (sandboxed) assert.ok(res.survivors.length === 0 || res.survivors.some((s) => s.pid === pid && s.error), 'survivor not reported');
+    else {
+      assert.deepEqual(res.survivors, []);
       assert.ok(await waitFor(() => !alive(pid), 2000), 'descendant still running');
     }
   } finally {
@@ -71,12 +73,44 @@ test('runShell timeout kills descendants by PID, including one whose parent alre
 
 test('runShell reports surviving PIDs and the kill error when termination fails', async () => {
   const { pidFile, cmd } = orphanScripts('refused');
-  const res = await runShell(cmd, { timeoutMs: 1500, killPid: () => { throw new Error('EPERM refused'); } });
+  const res = await runShell(cmd, { timeoutMs: 3500, killPid: () => { throw new Error('EPERM refused'); } });
   assert.equal(res.timedOut, true);
   await waitFor(() => existsSync(pidFile), 1000);
   const pid = Number(readFileSync(pidFile, 'utf8'));
   try {
     assert.ok(res.survivors.some((s) => s.pid === pid && /EPERM refused/.test(s.error)), JSON.stringify(res.survivors));
+  } finally {
+    try { process.kill(pid); } catch {}
+  }
+});
+
+test('runShell with a failed process snapshot reports known descendants as unverified, not as cleaned up', async () => {
+  const { pidFile, cmd } = orphanScripts('nosnap');
+  const res = await runShell(cmd, { timeoutMs: 3500, killPid: () => { throw new Error('EPERM refused'); }, snapshotCommand: [process.execPath, ['-e', 'process.exit(1)']] });
+  assert.equal(res.timedOut, true);
+  await waitFor(() => existsSync(pidFile), 1000);
+  const pid = Number(readFileSync(pidFile, 'utf8'));
+  try {
+    assert.ok(res.survivors.some((s) => s.pid === pid), JSON.stringify(res.survivors));
+    assert.ok(res.cleanupErrors.length > 0);
+    assert.match(res.output, /cleanup incomplete/);
+  } finally {
+    try { process.kill(pid); } catch {}
+  }
+});
+
+test('runShell timeout leaves an unrelated orphan alone', async () => {
+  const pidFile = join(tmp, 'unrelated.pid');
+  const sleeper = script('unrelated-sleeper.mjs', `import { writeFileSync } from 'node:fs'; writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setTimeout(() => {}, 60000);`);
+  const spawner = script('unrelated-spawner.mjs', `import { spawn } from 'node:child_process'; spawn(process.execPath, [${JSON.stringify(sleeper)}], { detached: true, stdio: 'ignore' }).unref();`);
+  await run(process.execPath, [spawner]); // the sleeper's parent exits at once: an orphan unrelated to the shell below
+  assert.ok(await waitFor(() => existsSync(pidFile), 2000), 'sleeper never started');
+  const pid = Number(readFileSync(pidFile, 'utf8'));
+  try {
+    const hang = script('unrelated-hang.mjs', 'setTimeout(() => {}, 60000);');
+    const res = await runShell(`"${process.execPath}" "${hang}"`, { timeoutMs: 800 });
+    assert.equal(res.timedOut, true);
+    assert.ok(alive(pid), 'unrelated orphan was killed');
   } finally {
     try { process.kill(pid); } catch {}
   }

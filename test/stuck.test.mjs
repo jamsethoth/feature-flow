@@ -41,24 +41,55 @@ test('validateRetryStuck refuses numbers that are not sub-issues or not in-progr
   assert.throws(() => run.validateRetryStuck([9], tickets), /#9/);
 });
 
-test('resetTicket closes the open PR, deletes branch locally and on origin, removes worktree, clears the label', async () => {
+const fakeReset = ({ branches, pr = { number: 70, state: 'OPEN', isDraft: true }, failDiscard = false, failLabel = false }) => {
   const calls = [];
   const gh = {
-    findPr: async (branch) => (calls.push(['findPr', branch]), { number: 70, state: 'OPEN', isDraft: true }),
+    findPr: async () => pr,
     closePr: async (n) => calls.push(['closePr', n]),
-    editLabels: async (n, change) => calls.push(['editLabels', n, change]),
+    editLabels: async (n, change) => { if (failLabel) throw new Error('HTTP 502'); calls.push(['editLabels', n, change]); },
   };
   const git = {
-    listWorktrees: async () => [{ path: '/wt/ticket-7', branch: 'ticket/7-thing' }, { path: '/wt/ticket-8', branch: 'ticket/8-other' }],
-    removeWorktree: async (root, path, branch) => calls.push(['removeWorktree', path, branch]),
-    deleteRemoteBranch: async (root, branch) => calls.push(['deleteRemoteBranch', branch]),
+    ticketBranches: async (root, n) => (calls.push(['ticketBranches', n]), branches),
+    discardBranch: async (root, b) => { if (failDiscard) throw new Error('worktree locked'); calls.push(['discardBranch', b.branch]); },
   };
-  await run.resetTicket(7, { repo: { mainRoot: '/repo' }, gh, git, log() {} });
+  const logs = [], events = [];
+  const opts = { repo: { mainRoot: '/repo' }, gh, git, log: (m) => logs.push(m), ev: (t, d) => events.push([t, d]) };
+  return { calls, logs, events, opts };
+};
+const wtBranch = { branch: 'ticket/7-thing', path: '/wt/ticket-7', local: true, remote: true };
+
+test('resetTicket closes the draft PR, discards the ticket branch and worktree, clears the label', async () => {
+  const { calls, opts } = fakeReset({ branches: [wtBranch] });
+  await run.resetTicket(7, opts);
   assert.deepEqual(calls.find((c) => c[0] === 'closePr'), ['closePr', 70]);
-  assert.deepEqual(calls.find((c) => c[0] === 'removeWorktree'), ['removeWorktree', '/wt/ticket-7', 'ticket/7-thing']);
-  assert.deepEqual(calls.find((c) => c[0] === 'deleteRemoteBranch'), ['deleteRemoteBranch', 'ticket/7-thing']);
+  assert.deepEqual(calls.find((c) => c[0] === 'discardBranch'), ['discardBranch', 'ticket/7-thing']);
   assert.deepEqual(calls.find((c) => c[0] === 'editLabels'), ['editLabels', 7, { remove: ['in-progress'] }]);
-  assert.ok(!calls.some((c) => JSON.stringify(c).includes('ticket-8') || JSON.stringify(c).includes('ticket/8')), 'other tickets are untouched');
+});
+
+test('resetTicket cleans a leftover branch and draft PR even when no worktree exists', async () => {
+  const { calls, opts } = fakeReset({ branches: [{ branch: 'ticket/7-thing', path: null, local: true, remote: true }] });
+  await run.resetTicket(7, opts);
+  assert.ok(calls.some((c) => c[0] === 'discardBranch'));
+  assert.ok(calls.some((c) => c[0] === 'closePr'));
+});
+
+test('resetTicket refuses a published PR and touches nothing', async () => {
+  const { calls, opts } = fakeReset({ branches: [wtBranch], pr: { number: 70, state: 'OPEN', isDraft: false } });
+  await assert.rejects(run.resetTicket(7, opts), /published PR #70/);
+  assert.ok(!calls.some((c) => ['closePr', 'discardBranch', 'editLabels'].includes(c[0])));
+});
+
+test('resetTicket keeps the in-progress label when cleanup fails', async () => {
+  const { calls, opts } = fakeReset({ branches: [wtBranch], failDiscard: true });
+  await assert.rejects(run.resetTicket(7, opts), /worktree locked/);
+  assert.ok(!calls.some((c) => c[0] === 'editLabels'));
+});
+
+test('resetTicket records a failed label removal in the log and events, and throws', async () => {
+  const { logs, events, opts } = fakeReset({ branches: [wtBranch], failLabel: true });
+  await assert.rejects(run.resetTicket(7, opts), /#7/);
+  assert.ok(logs.some((l) => l.includes('#7') && l.includes('HTTP 502')));
+  assert.ok(events.some(([t, d]) => t === 'label_failed' && d.ticket === 7));
 });
 
 test('stuckTickets lists only in-progress tickets older than stuckAfterHours; stuckMessage names the retry command', () => {

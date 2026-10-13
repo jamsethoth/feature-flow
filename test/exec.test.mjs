@@ -46,6 +46,15 @@ test('runShell: a command waiting for stdin EOF returns promptly', async () => {
   assert.match(res.output, /eof/);
 });
 
+test('runShell with a timeout still returns the exit code and output of a command that finishes', async () => {
+  const p = script('exit7.mjs', `console.log('hi'); process.exit(7);`);
+  const res = await runShell(`"${process.execPath}" "${p}"`, { timeoutMs: 20000 });
+  assert.equal(res.code, 7);
+  assert.match(res.output, /hi/);
+  assert.ok(!res.timedOut);
+  assert.ok(!/FFJOB/.test(res.output));
+});
+
 test('runShell: a command outliving timeoutMs returns within budget, flagged as timed out', async () => {
   const p = script('sleep.mjs', `setTimeout(() => {}, 60000);`);
   const t = Date.now();
@@ -73,18 +82,19 @@ test('runShell timeout kills descendants by PID, including one whose parent alre
 
 test('runShell reports surviving PIDs and the kill error when termination fails', async () => {
   const { pidFile, cmd } = orphanScripts('refused');
-  const res = await runShell(cmd, { timeoutMs: 3500, killPid: () => { throw new Error('EPERM refused'); } });
+  const res = await runShell(cmd, { timeoutMs: 3500, killPid: () => { throw new Error('EPERM refused'); }, denyTerminate: true });
   assert.equal(res.timedOut, true);
   await waitFor(() => existsSync(pidFile), 1000);
   const pid = Number(readFileSync(pidFile, 'utf8'));
   try {
-    assert.ok(res.survivors.some((s) => s.pid === pid && /EPERM refused/.test(s.error)), JSON.stringify(res.survivors));
+    assert.ok(res.survivors.some((s) => s.pid === pid && /EPERM refused|withheld/.test(s.error)), JSON.stringify(res.survivors));
   } finally {
+    for (const s of res.survivors) try { process.kill(s.pid); } catch {} // the withheld job leaves its root running too
     try { process.kill(pid); } catch {}
   }
 });
 
-test('runShell with a failed process snapshot reports known descendants as unverified, not as cleaned up', async () => {
+test('runShell with a failed process snapshot reports known descendants as unverified, not as cleaned up', { skip: process.platform === 'win32' && 'Windows contains descendants with a job object, no snapshot' }, async () => {
   const { pidFile, cmd } = orphanScripts('nosnap');
   const res = await runShell(cmd, { timeoutMs: 3500, killPid: () => { throw new Error('EPERM refused'); }, snapshotCommand: [process.execPath, ['-e', 'process.exit(1)']] });
   assert.equal(res.timedOut, true);

@@ -285,3 +285,21 @@ test('pool never exceeds its limit and keeps result order', async () => {
   assert.equal(peak, 2);
   assert.deepEqual(res, [10, 20, 30, 40, 50]);
 });
+
+test('plansDir is the per-repo folder under USER_DIR', async () => {
+  const { plansDir, USER_DIR } = await import('../lib/config.mjs');
+  assert.equal(plansDir('feature-flow'), join(USER_DIR, 'plans', 'feature-flow'));
+});
+
+test('plan opening prompt names the plans folder', async () => {
+  const { planOpening } = await import('../lib/stages.mjs');
+  const text = planOpening({ root: '/r', planApproval: true, request: 'x', plansFolder: '/home/u/plans/r' });
+  assert.match(text, /^Plans folder: \/home\/u\/plans\/r$/m);
+  assert.match(text, /Feature request: x/);
+});
+
+test('planner persona does not write plans under the git dir', () => {
+  const p = readFileSync(new URL('../personas/planner.md', import.meta.url), 'utf8');
+  assert.doesNotMatch(p, /git-common-dir/);
+  assert.doesNotMatch(p, /feature-flow\/plans/);
+});

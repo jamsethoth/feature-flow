@@ -203,6 +203,18 @@ test('runShell: when the job cannot be set up and taskkill is refused, the child
   }
 });
 
+test('runShell: when the job cannot be set up, a taskkill slowed by load is waited for, not cut off as failed', { skip: process.platform !== 'win32' && 'Windows job objects only' }, async () => {
+  const top = script('nojob-slow-top.mjs', 'setTimeout(() => {}, 8000);'); // the fake taskkill leaves it running, so it ends itself
+  // a busy machine (e.g. the full test suite) can take this long to walk and kill the tree
+  const res = await withEnv({ FF_TEST_NOJOB: '1' }, () => runShell(`"${process.execPath}" "${top}"`, { timeoutMs: 3000, taskkillCommand: [process.execPath, ['-e', 'setTimeout(() => {}, 700)']] }));
+  try {
+    assert.equal(res.timedOut, true);
+    assert.ok(!res.cleanupErrors.some((e) => /taskkill/.test(e)), JSON.stringify(res.cleanupErrors));
+  } finally {
+    for (const s of res.survivors) try { process.kill(s.pid); } catch {}
+  }
+});
+
 test('runShell: a command that finishes is not reported as timed out while its leftover process still holds the output pipes', { skip: process.platform !== 'win32' && 'Windows job objects only' }, async () => {
   const sleeper = script('drain-sleeper.mjs', 'setTimeout(() => {}, 8000);');
   const quit = script('drain-quit.mjs', `import { spawn } from 'node:child_process'; spawn(process.execPath, [${JSON.stringify(sleeper)}], { detached: true, stdio: 'inherit' }).unref();`);

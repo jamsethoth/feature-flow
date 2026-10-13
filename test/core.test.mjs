@@ -290,6 +290,7 @@ const listRunner = (plugins, mcp, calls = {}) => async (cmd, args) => {
   calls[key] = (calls[key] ?? 0) + 1;
   if (key === 'plugin list') return { stdout: typeof plugins === 'string' ? plugins : JSON.stringify(plugins) };
   if (key === 'mcp list') return { stdout: typeof mcp === 'string' ? mcp : JSON.stringify(mcp) };
+  if (key === 'debug prompt-input') return { stdout: JSON.stringify('- caveman: Terse. (file: C:/s/caveman/SKILL.md)\n') };
   throw new Error(`unexpected ${cmd} ${args.join(' ')}`);
 };
 const codexListing = (plugins, mcp = []) => ({ plugins, mcp });
@@ -375,7 +376,8 @@ test('useUserConfig false reports listed MCP servers missing without running lis
   assert.deepEqual(codexToolkit({ useUserConfig: false }, { mcp: ['playwright'] }).missing, ['mcp playwright (useUserConfig is false)']);
   let ran = 0;
   const cfg = { review: { cli: 'codex' }, toolkit: { codex: { useUserConfig: false } }, stageTools: { review: { mcp: ['playwright'] } } };
-  const r = await toolkitMod.resolveStageTools(cfg, 'review', { codexListings: async () => { ran++; return codexListing([]); } });
+  const r = await toolkitMod.resolveStageTools(cfg, 'review', { codexListings: async () => { ran++; return codexListing([]); },
+    codexSkills: async () => [{ name: 'caveman', file: 'C:/s/caveman/SKILL.md' }] });
   assert.deepEqual(r.missing, ['mcp playwright (useUserConfig is false)']);
   assert.equal(ran, 0);
 });
@@ -389,6 +391,83 @@ test('codexToolkit passes the Windows sandbox mode and hook switch', () => {
 test('codexToolkit with useUserConfig false reports listed plugins missing', () => {
   assert.deepEqual(codexToolkit({ useUserConfig: false }, { plugins: ['ponytail'] }),
     { args: ['--ignore-user-config', '-c', 'features.remote_plugin=false'], preamble: '', missing: ['plugin ponytail (useUserConfig is false)'] });
+});
+
+const promptInput = JSON.stringify({ input: [{ text: '## Skills\n- caveman-commit: Terse commits. (file: r9/SKILL.md)\n- mattpocock-skills:tdd: Red green refactor. (file: C:/p/tdd/SKILL.md)\n' }] });
+
+test('parseCodexSkills extracts names (including plugin-namespaced) and files from a prompt-input fixture', () => {
+  assert.deepEqual(toolkitMod.parseCodexSkills(promptInput),
+    [{ name: 'caveman-commit', file: 'r9/SKILL.md' }, { name: 'mattpocock-skills:tdd', file: 'C:/p/tdd/SKILL.md' }]);
+});
+
+test('parseCodexSkills expands Skill roots aliases and decodes JSON backslashes, so repo skills stay on', () => {
+  const text = JSON.stringify({ input: [{ text: 'Skill roots\n- `r0` = `C:/home/.codex/skills`\n- `r1` = `C:/repo/.agents/skills`\n\n## Skills\n'
+    + '- caveman: Terse. (file: r0/caveman/SKILL.md)\n- local: Aliased. (file: r1/local/SKILL.md)\n- win: Backslashed. (file: C:\\repo\\.agents\\skills\\win\\SKILL.md)\n' }] });
+  const skills = toolkitMod.parseCodexSkills(text);
+  assert.deepEqual(skills, [{ name: 'caveman', file: 'C:/home/.codex/skills/caveman/SKILL.md' },
+    { name: 'local', file: 'C:/repo/.agents/skills/local/SKILL.md' }, { name: 'win', file: 'C:\\repo\\.agents\\skills\\win\\SKILL.md' }]);
+  const { args } = codexToolkit({}, {}, { plugins: [], mcp: [], skills }, 'C:\\repo');
+  assert.deepEqual(args.filter((a) => a.startsWith('skills.config=')), ['skills.config=[{name="caveman",enabled=false}]']);
+});
+
+const skillRoot = 'C:\\repo';
+const skillListing = () => ({ plugins: ['ponytail@ponytail', 'mattpocock-skills@mattpocock'], mcp: [], skills: [
+  { name: 'caveman', file: 'C:/home/.codex/skills/caveman/SKILL.md' },
+  { name: 'mattpocock-skills:tdd', file: 'C:/cache/mp/tdd/SKILL.md' },
+  { name: 'mattpocock-skills:grilling', file: 'C:/cache/mp/grilling/SKILL.md' },
+  { name: 'ponytail:ponytail-review', file: 'C:/cache/pt/review/SKILL.md' },
+  { name: 'repo-skill', file: 'c:/Repo/.agents/skills/repo-skill/SKILL.md' },
+] });
+
+test('Codex skill allowlist disables exactly the unlisted, non-plugin, non-repo skills in one skills.config arg', () => {
+  const { args, missing } = codexToolkit({}, { skills: ['tdd'], plugins: ['ponytail'] }, skillListing(), skillRoot);
+  assert.deepEqual(missing, []);
+  const cfgArgs = args.filter((a) => a.startsWith('skills.config='));
+  assert.deepEqual(cfgArgs, ['skills.config=[{name="caveman",enabled=false},{name="mattpocock-skills:grilling",enabled=false}]']);
+  assert.equal(args[args.indexOf(cfgArgs[0]) - 1], '-c');
+});
+
+test('Providing plugin of a listed skill is enabled inside the single plugins inline table', () => {
+  const { args } = codexToolkit({}, { skills: ['tdd'], plugins: ['ponytail'] }, skillListing(), skillRoot);
+  const tables = args.filter((a) => a.startsWith('plugins='));
+  assert.deepEqual(tables, ['plugins={"ponytail@ponytail"={enabled=true},"mattpocock-skills@mattpocock"={enabled=true}}']);
+});
+
+test('Ambiguous and unknown skill names are reported missing; catalog failure throws naming the command', async () => {
+  const listing = { ...skillListing(), skills: [...skillListing().skills, { name: 'ponytail:tdd', file: 'C:/cache/pt/tdd/SKILL.md' }] };
+  assert.deepEqual(codexToolkit({}, { skills: ['tdd', 'ghost'] }, listing, skillRoot).missing,
+    ['skill tdd ambiguous: mattpocock-skills:tdd, ponytail:tdd', 'skill ghost']);
+  assert.deepEqual(codexToolkit({}, { skills: ['ponytail:tdd'] }, listing, skillRoot).missing, []);
+  const failing = async () => { throw new Error('exit 1'); };
+  const cfg = { review: { cli: 'codex' }, stageTools: { review: { skills: ['tdd'] } } };
+  await assert.rejects(toolkitMod.resolveStageTools(cfg, 'review', { cwd: skillRoot, codexListings: async () => codexListing([]),
+    codexSkills: (opts) => toolkitMod.codexSkills({ ...opts, runner: failing }) }), /codex debug prompt-input/);
+  const empty = async () => ({ stdout: '{}' });
+  await assert.rejects(toolkitMod.codexSkills({ runner: empty, cwd: skillRoot, plugins: [] }), /codex debug prompt-input/);
+});
+
+test('parseCodexSkills keeps the last skill when its JSON string has no trailing newline', () => {
+  const text = JSON.stringify({ input: [{ text: '- caveman-commit: Terse. (file: r9/SKILL.md)\n- mattpocock-skills:tdd: Red. (file: C:/p/tdd/SKILL.md)' }] });
+  assert.deepEqual(toolkitMod.parseCodexSkills(text).map((s) => s.name), ['caveman-commit', 'mattpocock-skills:tdd']);
+});
+
+test('a skill the user already disabled stays disabled alongside ff disables', async () => {
+  const all = JSON.stringify({ input: [{ text: '- caveman: T. (file: C:/s/caveman/SKILL.md)\n- tdd: R. (file: C:/s/tdd/SKILL.md)\n' }] });
+  const visible = JSON.stringify({ input: [{ text: '- tdd: R. (file: C:/s/tdd/SKILL.md)\n' }] });
+  const runner = async (cmd, args) => ({ stdout: args.includes('skills.config=[]') ? all : visible });
+  const skills = await toolkitMod.codexSkills({ runner, cwd: skillRoot });
+  const { args } = codexToolkit({}, { skills: ['tdd'] }, { plugins: [], mcp: [], skills }, skillRoot);
+  assert.deepEqual(args.filter((a) => a.startsWith('skills.config=')), ['skills.config=[{name="caveman",enabled=false}]']);
+});
+
+test('useUserConfig false still checks and filters skills against the catalog', async () => {
+  const cfg = { review: { cli: 'codex' }, toolkit: { codex: { useUserConfig: false } }, stageTools: { review: { skills: ['ghost'] } } };
+  const seen = [];
+  const r = await toolkitMod.resolveStageTools(cfg, 'review', { cwd: skillRoot,
+    codexSkills: async (opts) => { seen.push(opts); return [{ name: 'caveman', file: 'C:/s/caveman/SKILL.md' }]; } });
+  assert.deepEqual(r.missing, ['skill ghost']);
+  assert.equal(seen[0].ignoreUserConfig, true);
+  assert.ok(r.args.includes('skills.config=[{name="caveman",enabled=false}]'), r.args.join(' '));
 });
 
 const codexInvoke = (toolkit, plugins, runner) => invoke({ stage: { cli: 'codex', persona: 'reviewer', model: 'x', effort: 'low' }, stageName: 'review',
@@ -407,9 +486,16 @@ test('codex adapter rejects a stage with a missing plugin before spawning codex 
     (err) => /review tools not found: .*plugin ff-no-such-plugin-xyz/.test(err.message));
   assert.ok(!calls.includes('exec'));
   const none = [];
-  await assert.rejects(codexInvoke({ codex: { useUserConfig: false } }, ['ponytail'], async (c, a) => { none.push(a); return { stdout: '' }; }),
+  await assert.rejects(codexInvoke({ codex: { useUserConfig: false } }, ['ponytail'], async (c, a) => { none.push(a); return { stdout: promptInput }; }),
     /review tools not found: .*plugin ponytail \(useUserConfig is false\)/);
-  assert.deepEqual(none, []);
+  assert.deepEqual(none.map((a) => a.slice(0, 2).join(' ')), ['debug prompt-input']);
+});
+
+test('the useUserConfig false catalog uses only flags debug prompt-input accepts and drops user plugins and rules', async () => {
+  const seen = [];
+  await toolkitMod.codexSkills({ runner: async (c, a) => { seen.push(a); return { stdout: promptInput }; }, cwd: skillRoot, ignoreUserConfig: true });
+  // --ignore-user-config is exec-only; debug prompt-input rejects it (Codex 0.162).
+  assert.deepEqual(seen, [['debug', 'prompt-input', '-c', 'features.remote_plugin=false', '-c', 'features.plugins=false', '-c', 'skills.config=[]']]);
 });
 
 test('the old Codex config.toml parsers are gone from lib/ and test/', () => {
@@ -778,7 +864,8 @@ function toolFixtures() {
   mkdirSync(join(home, 'plugins'), { recursive: true });
   mkdirSync(pony);
   writeFileSync(join(home, 'plugins', 'installed_plugins.json'), JSON.stringify({ plugins: { 'ponytail@mkt': [{ installPath: pony }] } }));
-  return { home, cwd: home, codexListings: async () => ({ plugins: ['ponytail@mkt'], mcp: [] }) };
+  return { home, cwd: home, codexListings: async () => ({ plugins: ['ponytail@mkt'], mcp: [] }),
+    codexSkills: async () => [{ name: 'mattpocock-skills:code-review', file: 'C:/s/code-review/SKILL.md' }] };
 }
 
 // Every gh method records its call and throws, so a run that gets past the preflight stops at its first gh call.

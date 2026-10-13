@@ -1,11 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mergeConfig, parseCommands, loadConfig, loadPersona, budgetFor } from '../lib/config.mjs';
+import { mergeConfig, parseCommands, loadConfig, loadPersona, budgetFor, plansDir, USER_DIR } from '../lib/config.mjs';
 import { topoSort } from '../lib/publish.mjs';
 import { isReady } from '../lib/github.mjs';
 import { stageForRound, pool, cleanupMerged, checkRed } from '../lib/run.mjs';
 import { codexUsage, recordedSandbox, apiCost, lastQuotaPct } from '../lib/adapters.mjs';
-import { styleBlock } from '../lib/stages.mjs';
+import { styleBlock, planOpening } from '../lib/stages.mjs';
 import { withPrefixedTwins, claudeToolkit, findClaudePlugin, codexMcpServers, codexPlugins, codexToolkit, claudeTrusted, grantClaudeTrust } from '../lib/toolkit.mjs';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
@@ -505,4 +505,20 @@ test('red gate: nonzero exit without the reported test names is rejected', () =>
 
 test('red gate: nonzero exit naming a reported failing test is accepted', () => {
   assert.deepEqual(checkRed({ code: 1, output: 'not ok 1 - rejects bad input' }, ['rejects bad input']), { ok: true });
+});
+
+test('plansDir is the per-repo folder under USER_DIR', () => {
+  assert.equal(plansDir('feature-flow'), join(USER_DIR, 'plans', 'feature-flow'));
+});
+
+test('planOpening names the plans folder', () => {
+  const dir = plansDir('feature-flow');
+  const p = planOpening({ root: '/r', planApproval: true, feature: 'x', plansFolder: dir });
+  assert.ok(p.includes(`Plans folder: ${dir}`));
+});
+
+test('planner persona writes plans to the plans folder, not the git dir', () => {
+  const md = readFileSync(join(fileURLToPath(new URL('..', import.meta.url)), 'personas', 'planner.md'), 'utf8');
+  assert.ok(!md.includes('git-common-dir'));
+  assert.ok(!md.includes('feature-flow/plans'));
 });

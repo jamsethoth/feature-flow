@@ -216,6 +216,16 @@ test('cleanupMerged keeps a merged worktree holding an ignored unsaved file', as
   assert.ok(existsSync(join(path, 'secret.txt')));
 });
 
+test('cleanupMerged keeps an untracked file even when status.showUntrackedFiles=no', async () => {
+  const { root, mainRoot } = cloneWithOrigin();
+  const path = join(root, 'wt', 'ticket-4');
+  await ensureWorktree({ mainRoot, path, branch: 'ticket/4-x', base: 'main' });
+  execFileSync('git', ['config', 'status.showUntrackedFiles', 'no'], { cwd: mainRoot });
+  writeFileSync(join(path, 'unsaved.txt'), 'work');
+  await cleanupMerged({ mainRoot }, {}, () => {}, { findPr: async () => ({ state: 'MERGED' }) });
+  assert.ok(existsSync(join(path, 'unsaved.txt')));
+});
+
 test('diffStats splits test and non-test insertions; severityCounts tallies findings', () => {
   const s = diffStats('3\t1\tsrc/cart.mjs\n10\t0\ttest/cart.test.mjs\n2\t2\tsrc/util.spec.ts\n-\t-\timg.png\n');
   assert.deepEqual(s, { files: 4, insertions: 15, deletions: 3, testFiles: 2, testInsertions: 12 });

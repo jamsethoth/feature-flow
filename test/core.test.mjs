@@ -4,10 +4,11 @@ import { mergeConfig, parseCommands, loadConfig, loadPersona, budgetFor } from '
 import { topoSort } from '../lib/publish.mjs';
 import { isReady } from '../lib/github.mjs';
 import { stageForRound, pool, cleanupMerged, checkRed } from '../lib/run.mjs';
-import { codexUsage, recordedSandbox, apiCost, lastQuotaPct } from '../lib/adapters.mjs';
+import * as runMod from '../lib/run.mjs';
+import { codexUsage, recordedSandbox, apiCost, lastQuotaPct, invoke } from '../lib/adapters.mjs';
 import { styleBlock } from '../lib/stages.mjs';
 import { withPrefixedTwins, claudeToolkit, findClaudePlugin, codexMcpServers, codexPlugins, codexToolkit, claudeTrusted, grantClaudeTrust } from '../lib/toolkit.mjs';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, readdirSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { commitAll, discardChanges, ensureWorktree } from '../lib/git.mjs';
 import { parseOpts, positiveInt } from '../lib/opts.mjs';
@@ -17,6 +18,8 @@ import { planShape, claudeTranscriptMetrics, codexTranscriptMetrics, lastRequest
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
+
+const ROOT = fileURLToPath(new URL('..', import.meta.url));
 
 test('mergeConfig merges stage objects key by key, later layers win', () => {
   const out = mergeConfig({ implement: { cli: 'claude', model: 'sonnet' }, maxParallel: 2 }, { implement: { model: 'opus' }, maxParallel: 1 });
@@ -130,12 +133,124 @@ test('withPrefixedTwins adds rewritten forms of Bash rules only', () => {
 });
 
 test('claudeToolkit builds the rtk hook settings and reports unknown entries', () => {
-  const tk = claudeToolkit({ hooks: ['rtk', 'nope'], plugins: [] });
+  const home = mkdtempSync(join(tmpdir(), 'ff-home-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'ff-cwd-'));
+  const tk = claudeToolkit({ hooks: ['rtk', 'nope'] }, { plugins: [] }, { home, cwd });
   assert.equal(tk.args[0], '--settings');
   assert.match(tk.args[1], /rtk hook claude/);
   assert.deepEqual(tk.prefixes, ['rtk ']);
   assert.deepEqual(tk.missing, ['hook nope (unknown)']);
-  assert.deepEqual(claudeToolkit(undefined), { args: [], prefixes: [], missing: [] });
+  assert.deepEqual(claudeToolkit(undefined, undefined, { home, cwd }), { args: ['--settings', JSON.stringify({ enabledPlugins: {} })], prefixes: [], missing: [] });
+});
+
+// A Claude home with alpha@mkt and beta@mkt installed, and a cwd whose project/local settings enable more.
+function claudeFixture(installed = { 'alpha@mkt': 'alpha', 'beta@mkt': 'beta' }) {
+  const home = mkdtempSync(join(tmpdir(), 'ff-home-'));
+  const plugins = {};
+  for (const [key, dir] of Object.entries(installed)) {
+    const p = join(home, 'cache', dir);
+    mkdirSync(p, { recursive: true });
+    plugins[key] = [{ installPath: p }];
+  }
+  mkdirSync(join(home, 'plugins'), { recursive: true });
+  writeFileSync(join(home, 'plugins', 'installed_plugins.json'), JSON.stringify({ plugins }));
+  const cwd = mkdtempSync(join(tmpdir(), 'ff-cwd-'));
+  mkdirSync(join(cwd, '.claude'));
+  writeFileSync(join(cwd, '.claude', 'settings.json'), JSON.stringify({ enabledPlugins: { 'gamma@other': true, 'cc-plugin-x@builtin': true } }));
+  writeFileSync(join(cwd, '.claude', 'settings.local.json'), JSON.stringify({ enabledPlugins: { 'delta@x': true } }));
+  return { home, cwd };
+}
+
+const settingsOf = (args) => {
+  assert.equal(args.filter((a) => a === '--settings').length, 1);
+  return JSON.parse(args[args.indexOf('--settings') + 1]);
+};
+const pluginDirs = (args) => args.flatMap((a, i) => (a === '--plugin-dir' ? [args[i + 1]] : []));
+
+test('claudeToolkit loads only the listed plugin and disables every other installed/project/local one', () => {
+  const { home, cwd } = claudeFixture();
+  const tk = claudeToolkit({}, { plugins: ['alpha'] }, { home, cwd });
+  assert.deepEqual(tk.missing, []);
+  assert.deepEqual(pluginDirs(tk.args), [join(home, 'cache', 'alpha')]);
+  assert.deepEqual(settingsOf(tk.args).enabledPlugins, { 'alpha@mkt': false, 'beta@mkt': false, 'gamma@other': false, 'delta@x': false });
+});
+
+test('claudeToolkit merges hooks into the same single --settings', () => {
+  const { home, cwd } = claudeFixture();
+  const s = settingsOf(claudeToolkit({ hooks: ['rtk'] }, { plugins: ['alpha'] }, { home, cwd }).args);
+  assert.equal(s.hooks.PreToolUse[0].hooks[0].command, 'rtk hook claude');
+  assert.equal(s.enabledPlugins['alpha@mkt'], false);
+});
+
+test('claudeToolkit plugin names: qualified exact match, qualified miss, ambiguous bare name', () => {
+  const { home, cwd } = claudeFixture();
+  assert.deepEqual(pluginDirs(claudeToolkit({}, { plugins: ['alpha@mkt'] }, { home, cwd }).args), [join(home, 'cache', 'alpha')]);
+  assert.deepEqual(claudeToolkit({}, { plugins: ['alpha@other'] }, { home, cwd }).missing, ['plugin alpha@other']);
+  const two = claudeFixture({ 'alpha@a': 'a', 'alpha@b': 'b' });
+  assert.deepEqual(claudeToolkit({}, { plugins: ['alpha'] }, two).missing, ['plugin alpha ambiguous: alpha@a, alpha@b']);
+});
+
+test('claude adapter rejects a stage with a missing plugin before spawning', async (t) => {
+  const cwd = mkdtempSync(join(tmpdir(), 'ff-cwd-'));
+  let called = false;
+  const runner = async () => { called = true; return { stdout: '{}' }; };
+  // Belt and braces: an adapter that ignored `runner` must not reach the real claude.
+  const path = process.env.PATH;
+  process.env.PATH = '';
+  t.after(() => { process.env.PATH = path; });
+  await assert.rejects(invoke({ stage: { cli: 'claude', persona: 'implementer', model: 'x', effort: 'low' }, stageName: 'review',
+    persona: { path: 'p', text: '' }, prompt: '', schema: {}, cwd, write: false, commands: {}, toolkit: {},
+    tools: { skills: [], mcp: [], plugins: ['ff-no-such-plugin-xyz'] }, runner }),
+  (err) => /review tools not found: .*plugin ff-no-such-plugin-xyz/.test(err.message));
+  assert.equal(called, false);
+});
+
+test('loadConfig rejects replaced stageSkills / toolkit.claude.plugins keys, naming stageTools', () => {
+  const layer = (json) => {
+    const repo = mkdtempSync(join(tmpdir(), 'ff-repo-'));
+    mkdirSync(join(repo, '.agents', 'feature-flow'), { recursive: true });
+    writeFileSync(join(repo, '.agents', 'feature-flow', 'feature-flow.json'), JSON.stringify(json));
+    return repo;
+  };
+  assert.throws(() => loadConfig(layer({ stageSkills: {} })), (e) => e.message.includes('stageSkills') && e.message.includes('stageTools.<stage>.skills'));
+  assert.throws(() => loadConfig(layer({ toolkit: { claude: { plugins: [] } } })),
+    (e) => e.message.includes('toolkit.claude.plugins') && e.message.includes('stageTools.<stage>.plugins'));
+  assert.throws(() => loadConfig(layer({ stageSkills: {}, toolkit: { claude: { plugins: [] } } })),
+    (e) => e.message.includes('stageSkills') && e.message.includes('toolkit.claude.plugins'));
+});
+
+const SHIPPED_STAGE_TOOLS = {
+  plan: { skills: ['grilling', 'to-tickets', 'writing-for-agents'], mcp: [], plugins: [] },
+  implement: { skills: ['mattpocock-skills:tdd'], mcp: [], plugins: ['ponytail'] },
+  review: { skills: ['mattpocock-skills:code-review'], mcp: [], plugins: ['ponytail'] },
+  escalate: { skills: ['mattpocock-skills:diagnosing-bugs', 'mattpocock-skills:tdd'], mcp: [], plugins: ['ponytail'] },
+};
+
+test('shipped defaults carry stageTools and drop the old Claude keys', () => {
+  const cfg = loadConfig(null);
+  assert.deepEqual(cfg.stageTools, SHIPPED_STAGE_TOOLS);
+  assert.equal(cfg.stageSkills, undefined);
+  assert.equal(cfg.toolkit.claude.plugins, undefined);
+  assert.deepEqual(cfg.toolkit.claude.hooks, []);
+});
+
+test('stageCallTools and configSummary carry stageTools; stage_call logs tools', () => {
+  const cfg = loadConfig(null);
+  assert.deepEqual(runMod.stageCallTools(cfg, 'review'), { skills: ['mattpocock-skills:code-review'], mcp: [], plugins: ['ponytail'] });
+  assert.deepEqual(runMod.stageCallTools({}, 'review'), { skills: [], mcp: [], plugins: [] });
+  assert.deepEqual(runMod.configSummary(cfg).stageTools, cfg.stageTools);
+  const src = readFileSync(join(ROOT, 'lib', 'run.mjs'), 'utf8');
+  assert.match(src, /ev\('stage_call', \{[^}]*\btools\b/);
+});
+
+test('no lib/, bin/ or README reference to the old keys outside the replaced-key table', () => {
+  const files = ['lib', 'bin'].flatMap((d) => readdirSync(join(ROOT, d)).map((f) => join(ROOT, d, f))).concat(join(ROOT, 'README.md'));
+  for (const f of files) {
+    const lines = readFileSync(f, 'utf8').split('\n').filter((l) => /stageSkills|toolkit\.claude\.plugins/.test(l));
+    // The replaced-key table in config.mjs is the only allowed mention.
+    const allowed = f.endsWith('config.mjs') ? lines.filter((l) => !/^\s*\[?\s*['"](stageSkills|toolkit\.claude\.plugins)['"]/.test(l)) : lines;
+    assert.deepEqual(allowed, [], f);
+  }
 });
 
 test('findClaudePlugin resolves installed and nested synced plugins', () => {

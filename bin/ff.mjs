@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import { readFileSync, existsSync, mkdirSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { loadConfig, loadPersona, loadCommands, loadSkillText, budgetFor, STAGES } from '../lib/config.mjs';
+import { loadConfig, loadPersona, loadCommands, loadSkillText, budgetFor, plansDir, STAGES } from '../lib/config.mjs';
+import { planOpening } from '../lib/stages.mjs';
 import { run } from '../lib/exec.mjs';
 import { interactiveArgs } from '../lib/adapters.mjs';
 import { repoInfo } from '../lib/git.mjs';
@@ -157,7 +158,9 @@ async function plan(args) {
   const started = Date.now();
   // The marker lets `ff publish`, run from inside the session, tag the epic with this planId.
   writePlanMarker(dir, { planId, started, background: Boolean(o.bg) });
-  const opening = `Start the feature-flow planning procedure for the repo at ${root}. planApproval is ${cfg.planApproval}.\nFeature request: ${o._.join(' ') || '(ask me for it)'}${skillsBlock(cfg.stageSkills?.plan)}`;
+  const plansFolder = plansDir(info.name);
+  mkdirSync(plansFolder, { recursive: true });
+  const opening = planOpening({ root, planApproval: cfg.planApproval, feature: o._.join(' '), plansFolder, skills: skillsBlock(cfg.stageSkills?.plan) });
   const budget = budgetFor(cfg, 'plan', cfg.plan.model) ?? Infinity;
   const [cmd, cliArgs] = interactiveArgs(cfg.plan, persona, opening, cfg.plan.cli === 'claude' ? planId : undefined, Number.isFinite(budget) ? budget : undefined);
 

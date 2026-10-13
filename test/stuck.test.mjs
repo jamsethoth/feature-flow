@@ -41,10 +41,10 @@ test('validateRetryStuck refuses numbers that are not sub-issues or not in-progr
   assert.throws(() => run.validateRetryStuck([9], tickets), /#9/);
 });
 
-const fakeReset = ({ branches, pr = { number: 70, state: 'OPEN', isDraft: true }, failDiscard = false, failLabel = false }) => {
+const fakeReset = ({ branches, prs = [{ number: 70, state: 'OPEN', isDraft: true }], failDiscard = false, failLabel = false }) => {
   const calls = [];
   const gh = {
-    findPr: async () => pr,
+    openPrs: async () => prs,
     closePr: async (n) => calls.push(['closePr', n]),
     editLabels: async (n, change) => { if (failLabel) throw new Error('HTTP 502'); calls.push(['editLabels', n, change]); },
   };
@@ -74,9 +74,15 @@ test('resetTicket cleans a leftover branch and draft PR even when no worktree ex
 });
 
 test('resetTicket refuses a published PR and touches nothing', async () => {
-  const { calls, opts } = fakeReset({ branches: [wtBranch], pr: { number: 70, state: 'OPEN', isDraft: false } });
+  const { calls, opts } = fakeReset({ branches: [wtBranch], prs: [{ number: 71, state: 'OPEN', isDraft: true }, { number: 70, state: 'OPEN', isDraft: false }] });
   await assert.rejects(run.resetTicket(7, opts), /published PR #70/);
   assert.ok(!calls.some((c) => ['closePr', 'discardBranch', 'editLabels'].includes(c[0])));
+});
+
+test('resetTicket closes every open draft PR for the branch', async () => {
+  const { calls, opts } = fakeReset({ branches: [wtBranch], prs: [{ number: 70, isDraft: true }, { number: 72, isDraft: true }] });
+  await run.resetTicket(7, opts);
+  assert.deepEqual(calls.filter((c) => c[0] === 'closePr'), [['closePr', 70], ['closePr', 72]]);
 });
 
 test('resetTicket keeps the in-progress label when cleanup fails', async () => {
@@ -105,6 +111,16 @@ test('stuckTickets lists only in-progress tickets older than stuckAfterHours; st
   assert.equal(run.stuckMessage(5, []), null);
 });
 
+test('loadStuckAges logs the ticket number and error when the age lookup fails', async () => {
+  const logs = [];
+  const tickets = [issue(7, ['in-progress']), issue(8, ['in-progress'])];
+  const gh = { labelNames: (t) => t.labels.map((l) => l.name), inProgressSince: async (n) => { if (n === 7) throw new Error('HTTP 401'); return '2026-10-12T01:00:00Z'; } };
+  await run.loadStuckAges(tickets, gh, '/repo', (m) => logs.push(m));
+  assert.equal(tickets[0].inProgressSince, null);
+  assert.equal(tickets[1].inProgressSince, '2026-10-12T01:00:00Z');
+  assert.ok(logs.some((l) => l.includes('#7') && l.includes('HTTP 401')));
+});
+
 test('safeDiffStats logs a numstat failure and returns null instead of zeros', async () => {
   const logs = [];
   const git = { numstat: async () => { throw new Error('bad revision'); } };
@@ -125,4 +141,38 @@ test('refreshOutcomes counts PRs it could not refresh', async () => {
   const res = await stats.refreshOutcomes(events, '/repo', (t, d) => appended.push([t, d]), runGh);
   assert.deepEqual(res, { refreshed: 1, failed: 1 });
   assert.match(stats.refreshSummary(res), /1 .*fail/i);
+});
+
+test('ticketBranches finds and discardBranch removes a ticket\'s branches, worktree or not, leaving other tickets alone', async () => {
+  const { mkdtempSync, existsSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { execFileSync } = await import('node:child_process');
+  const git = await import('../lib/git.mjs');
+  const root = mkdtempSync(join(tmpdir(), 'ff-stuck-'));
+  try {
+    const sh = (cwd, ...args) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd, encoding: 'utf8' });
+    sh(root, 'init', '--bare', '-b', 'main', 'origin.git');
+    sh(root, 'clone', 'origin.git', 'main');
+    const main = join(root, 'main');
+    sh(main, 'commit', '--allow-empty', '-m', 'init');
+    sh(main, 'push', 'origin', 'HEAD:main');
+    sh(main, 'branch', 'ticket/7-with-wt');
+    sh(main, 'branch', 'ticket/7-no-wt');
+    sh(main, 'branch', 'ticket/70-other');
+    sh(main, 'push', 'origin', 'ticket/7-no-wt');
+    const wt = join(root, 'wt7');
+    sh(main, 'worktree', 'add', wt, 'ticket/7-with-wt');
+
+    const found = await git.ticketBranches(main, 7);
+    assert.deepEqual(found.map((b) => b.branch).sort(), ['ticket/7-no-wt', 'ticket/7-with-wt']);
+    for (const b of found) await git.discardBranch(main, b);
+
+    assert.ok(!existsSync(wt));
+    assert.deepEqual(await git.ticketBranches(main, 7), []);
+    assert.equal(sh(main, 'ls-remote', '--heads', 'origin', 'ticket/7-no-wt').trim(), '');
+    assert.equal((await git.ticketBranches(main, 70)).length, 1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

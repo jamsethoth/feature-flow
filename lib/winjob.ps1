@@ -1,6 +1,7 @@
 # Windows helper for lib/exec.mjs runShell: runs $env:FF_CMD in a job object so every descendant, including
 # orphans, is killed together. Control: a byte on stdin (or stdin EOF) terminates the job. Exit code: the command's.
 # Diagnostics go to stderr as lines prefixed with \x01FFJOB so exec.mjs can strip and parse them.
+if ($env:FF_TEST_STALL -eq '1') { Start-Sleep 30 } # test seam: a helper that never gets as far as starting the command
 Add-Type -TypeDefinition @'
 using System;
 using System.Collections.Generic;
@@ -32,17 +33,28 @@ public static class FFJob {
 
   static void Note(string s) { Console.Error.Write("\n\u0001FFJOB " + s + "\n"); Console.Error.Flush(); }
 
-  static List<int> Members(IntPtr job) {
-    var l = new List<int>();
-    int size = 8 + 8 * 512;
-    IntPtr buf = Marshal.AllocHGlobal(size);
-    try {
-      if (QueryInformationJobObject(job, 3, buf, size, IntPtr.Zero)) {
-        int n = Marshal.ReadInt32(buf, 4);
-        for (int i = 0; i < n; i++) l.Add((int)(long)Marshal.ReadIntPtr(buf, 8 + i * IntPtr.Size));
-      }
-    } finally { Marshal.FreeHGlobal(buf); }
-    return l;
+  // PIDs in the job, or null (with err set) when the query fails: an unknown membership must not read as an empty job.
+  // Grows the buffer on ERROR_MORE_DATA. FF_TEST_BUF (entries) and FF_TEST_QUERYFAIL are test seams.
+  static List<int> Members(IntPtr job, out int err) {
+    err = 0;
+    if (Environment.GetEnvironmentVariable("FF_TEST_QUERYFAIL") == "1") { err = 5; return null; }
+    int cap;
+    if (!int.TryParse(Environment.GetEnvironmentVariable("FF_TEST_BUF"), out cap) || cap < 1) cap = 512;
+    for (int attempt = 0; attempt < 6; attempt++, cap *= 4) {
+      int size = 8 + IntPtr.Size * cap;
+      IntPtr buf = Marshal.AllocHGlobal(size);
+      try {
+        if (QueryInformationJobObject(job, 3, buf, size, IntPtr.Zero)) {
+          var l = new List<int>();
+          int n = Marshal.ReadInt32(buf, 4);
+          for (int i = 0; i < n; i++) l.Add((int)(long)Marshal.ReadIntPtr(buf, 8 + i * IntPtr.Size));
+          return l;
+        }
+        err = Marshal.GetLastWin32Error();
+        if (err != 234) return null; // ERROR_MORE_DATA: retry with a larger buffer
+      } finally { Marshal.FreeHGlobal(buf); }
+    }
+    return null;
   }
 
   // deny: test seam, leave the job (and its processes) running and report them as survivors.
@@ -54,6 +66,7 @@ public static class FFJob {
     if (!deny) ext.basic.flags = 0x2000 | 0x800;
     else ext.basic.flags = 0x800;
     bool jobOk = job != IntPtr.Zero && SetInformationJobObject(job, 9, ref ext, Marshal.SizeOf(typeof(EXT)));
+    if (Environment.GetEnvironmentVariable("FF_TEST_NOJOB") == "1") jobOk = false; // test seam: pretend the job could not be set up
     if (!jobOk) Note("nojob " + Marshal.GetLastWin32Error());
 
     // the control pipe must not leak into the command or its descendants, or ff would never see EOF/close
@@ -80,14 +93,20 @@ public static class FFJob {
     while (!kill && WaitForSingleObject(pi.hp, 50) != 0) { }
     if (!kill) {
       // finished on its own: like a plain spawn, leave any background leftovers running
-      if (jobOk) { var left0 = Members(job); if (left0.Count > 0) Note("leftover " + string.Join(",", left0)); var keep = new EXT(); SetInformationJobObject(job, 9, ref keep, Marshal.SizeOf(typeof(EXT))); }
+      if (jobOk) { int e0; var left0 = Members(job, out e0); if (left0 != null && left0.Count > 0) Note("leftover " + string.Join(",", left0)); var keep = new EXT(); SetInformationJobObject(job, 9, ref keep, Marshal.SizeOf(typeof(EXT))); }
       uint code; GetExitCodeProcess(pi.hp, out code); return (int)code;
     }
 
-    if (!deny) { if (jobOk) TerminateJobObject(job, 1); else TerminateProcess(pi.hp, 1); }
+    if (!deny) {
+      // without a job leave the root alive: ff's taskkill /T needs its pid to find the children it still links to
+      if (jobOk && !TerminateJobObject(job, 1)) Note("termfail " + Marshal.GetLastWin32Error());
+    }
     var left = new List<int>();
     for (int i = 0; i < 20; i++) {
-      left = jobOk ? Members(job) : (WaitForSingleObject(pi.hp, 0) == 0 ? new List<int>() : new List<int> { pi.pid });
+      if (jobOk) {
+        int err; left = Members(job, out err);
+        if (left == null) { Note("unknown " + err); return 98; } // cannot tell what is still running
+      } else { left = WaitForSingleObject(pi.hp, 0) == 0 ? new List<int>() : new List<int> { pi.pid }; break; }
       if (left.Count == 0) break;
       Thread.Sleep(50);
     }

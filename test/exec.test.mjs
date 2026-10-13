@@ -71,10 +71,13 @@ test('runShell timeout kills descendants by PID, including one whose parent alre
   assert.ok(await waitFor(() => existsSync(pidFile), 1000), 'grandchild never started');
   const pid = Number(readFileSync(pidFile, 'utf8'));
   try {
-    if (sandboxed) assert.ok(res.survivors.length === 0 || res.survivors.some((s) => s.pid === pid && s.error), 'survivor not reported');
-    else {
+    const dead = await waitFor(() => !alive(pid), 2000);
+    if (sandboxed) {
+      // cleanup may be refused here, but a descendant that is still running must be named with an error
+      if (!dead) assert.ok(res.survivors.some((s) => s.pid === pid && s.error), `live descendant ${pid} not reported: ${JSON.stringify(res.survivors)}`);
+    } else {
       assert.deepEqual(res.survivors, []);
-      assert.ok(await waitFor(() => !alive(pid), 2000), 'descendant still running');
+      assert.ok(dead, 'descendant still running');
     }
   } finally {
     try { process.kill(pid); } catch {}
@@ -157,6 +160,63 @@ Start-Sleep 60
     assert.ok(!res.survivors.some((s) => s.pid === pid), 'an escaped child is not a survivor of the job');
   } finally {
     if (pid) try { process.kill(pid); } catch {}
+  }
+});
+
+const withEnv = async (env, fn) => {
+  Object.assign(process.env, env);
+  try { return await fn(); } finally { for (const k of Object.keys(env)) delete process.env[k]; }
+};
+
+test('runShell: when the job cannot be set up, the timeout still takes down the process tree and says orphans are not contained', { skip: process.platform !== 'win32' && 'Windows job objects only' }, async () => {
+  const pidFile = join(tmp, 'nojob.pid');
+  const child = script('nojob-child.mjs', `import { writeFileSync } from 'node:fs'; writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setTimeout(() => {}, 60000);`);
+  const top = script('nojob-top.mjs', `import { spawn } from 'node:child_process'; spawn(process.execPath, [${JSON.stringify(child)}], { stdio: 'ignore' }); setTimeout(() => {}, 60000);`);
+  const res = await withEnv({ FF_TEST_NOJOB: '1' }, () => runShell(`"${process.execPath}" "${top}"`, { timeoutMs: 4000 }));
+  const pid = existsSync(pidFile) ? Number(readFileSync(pidFile, 'utf8')) : null;
+  try {
+    assert.equal(res.timedOut, true);
+    assert.ok(res.cleanupErrors.some((e) => /job object unavailable/.test(e)), JSON.stringify(res.cleanupErrors));
+    assert.ok(pid, 'child never started');
+    assert.ok(await waitFor(() => !alive(pid), 3000), 'a child still linked to the shell was left running');
+  } finally {
+    if (pid) try { process.kill(pid); } catch {}
+  }
+});
+
+test('runShell: a helper that never starts and cannot be killed is reported, and does not keep ff waiting', { skip: process.platform !== 'win32' && 'Windows job objects only' }, async () => {
+  const t = Date.now();
+  const res = await withEnv({ FF_TEST_STALL: '1' }, () => runShell(`"${process.execPath}" -e "1"`, { timeoutMs: 800, taskkillCommand: [process.execPath, ['-e', 'process.exit(1)']] }));
+  try {
+    assert.ok(Date.now() - t < 5000, `took ${Date.now() - t} ms`);
+    assert.equal(res.timedOut, true);
+    assert.ok(res.cleanupErrors.length > 0, JSON.stringify(res));
+    assert.ok(res.survivors.length === 1 && /not verified gone|could not be killed/.test(res.survivors[0].error), JSON.stringify(res.survivors));
+  } finally {
+    for (const s of res.survivors) try { process.kill(s.pid); } catch {}
+  }
+});
+
+test('runShell: an unreadable job membership is reported as unverified, never as a clean cleanup', { skip: process.platform !== 'win32' && 'Windows job objects only' }, async () => {
+  const p = script('queryfail.mjs', 'setTimeout(() => {}, 60000);');
+  const res = await withEnv({ FF_TEST_QUERYFAIL: '1' }, () => runShell(`"${process.execPath}" "${p}"`, { timeoutMs: 3000 }));
+  assert.equal(res.timedOut, true);
+  assert.ok(res.cleanupErrors.some((e) => /could not verify the job is empty/.test(e)), JSON.stringify(res.cleanupErrors));
+  assert.ok(res.survivors.length > 0 && res.survivors.every((s) => /not verified gone/.test(s.error)), JSON.stringify(res.survivors));
+  assert.match(res.output, /cleanup incomplete/);
+});
+
+test('runShell: job membership larger than the first query buffer is still listed in full', { skip: process.platform !== 'win32' && 'Windows job objects only' }, async () => {
+  const { pidFile, cmd } = orphanScripts('smallbuf');
+  const res = await withEnv({ FF_TEST_BUF: '1' }, () => runShell(cmd, { timeoutMs: 3500, denyTerminate: true }));
+  await waitFor(() => existsSync(pidFile), 1000);
+  const pid = Number(readFileSync(pidFile, 'utf8'));
+  try {
+    assert.ok(res.survivors.length >= 3, JSON.stringify(res.survivors)); // shell, top, middle or grandchild: more than the 1-entry buffer
+    assert.ok(res.survivors.some((s) => s.pid === pid), JSON.stringify(res.survivors));
+  } finally {
+    for (const s of res.survivors) try { process.kill(s.pid); } catch {}
+    try { process.kill(pid); } catch {}
   }
 });
 

@@ -488,7 +488,14 @@ test('codex adapter rejects a stage with a missing plugin before spawning codex 
   const none = [];
   await assert.rejects(codexInvoke({ codex: { useUserConfig: false } }, ['ponytail'], async (c, a) => { none.push(a); return { stdout: promptInput }; }),
     /review tools not found: .*plugin ponytail \(useUserConfig is false\)/);
-  assert.deepEqual(none.map((a) => a.slice(0, 3).join(' ')), ['--ignore-user-config debug prompt-input']);
+  assert.deepEqual(none.map((a) => a.slice(0, 2).join(' ')), ['debug prompt-input']);
+});
+
+test('the useUserConfig false catalog uses only flags debug prompt-input accepts and drops user plugins and rules', async () => {
+  const seen = [];
+  await toolkitMod.codexSkills({ runner: async (c, a) => { seen.push(a); return { stdout: promptInput }; }, cwd: skillRoot, ignoreUserConfig: true });
+  // --ignore-user-config is exec-only; debug prompt-input rejects it (Codex 0.162).
+  assert.deepEqual(seen, [['debug', 'prompt-input', '-c', 'features.remote_plugin=false', '-c', 'features.plugins=false', '-c', 'skills.config=[]']]);
 });
 
 test('the old Codex config.toml parsers are gone from lib/ and test/', () => {

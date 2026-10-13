@@ -94,6 +94,19 @@ test('stageTools (claude): listed plugins become the only --plugin-dir args; a m
   assert.deepEqual(m.missing, ['plugin nope']);
 });
 
+test('stageTools (claude): a plugin enabled in project settings but not listed is switched off', async () => {
+  const { home } = claudeHome(['alpha@mkt', 'beta@mkt']);
+  const repo = tmp();
+  mkdirSync(join(repo, '.claude'));
+  writeFileSync(join(repo, '.claude', 'settings.json'), JSON.stringify({ enabledPlugins: { 'beta@mkt': true, 'alpha@mkt': true } }));
+  writeFileSync(join(repo, '.claude', 'settings.local.json'), JSON.stringify({ enabledPlugins: { 'gamma@mkt': true } }));
+  const r = await stageTools(stageCfg('claude', ['alpha']), 'implement', { claudeHome: home, repoRoot: repo });
+  assert.deepEqual(r.settings, { enabledPlugins: { 'beta@mkt': false, 'gamma@mkt': false } });
+  const none = await stageTools(stageCfg('claude', ['alpha']), 'implement', { claudeHome: home, repoRoot: tmp() });
+  assert.deepEqual(none.settings, {});
+  assert.deepEqual(toolkit.claudeToolkit({ hooks: [] }, r.settings).args, ['--settings', JSON.stringify(r.settings)]);
+});
+
 test('stageTools (codex): exact plugin allowlist, bare names match name@marketplace', async () => {
   const codexJson = codexFixture({ plugins: pluginFixture('ponytail@ponytail', 'github@openai-curated') });
   const r = await stageTools(stageCfg('codex', ['ponytail']), 'implement', { codexJson });

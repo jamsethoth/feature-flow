@@ -178,9 +178,48 @@ test('runShell: when the job cannot be set up, the timeout still takes down the 
     assert.equal(res.timedOut, true);
     assert.ok(res.cleanupErrors.some((e) => /job object unavailable/.test(e)), JSON.stringify(res.cleanupErrors));
     assert.ok(pid, 'child never started');
-    assert.ok(await waitFor(() => !alive(pid), 3000), 'a child still linked to the shell was left running');
+    const dead = await waitFor(() => !alive(pid), 3000);
+    if (sandboxed) { if (!dead) assert.ok(res.survivors.some((s) => s.pid === pid && s.error), `live child ${pid} not reported: ${JSON.stringify(res.survivors)}`); }
+    else assert.ok(dead, 'a child still linked to the shell was left running');
   } finally {
     if (pid) try { process.kill(pid); } catch {}
+  }
+});
+
+test('runShell: when the job cannot be set up and taskkill is refused, the children still linked to the shell are named', { skip: process.platform !== 'win32' && 'Windows job objects only' }, async () => {
+  const pidFile = join(tmp, 'nojob-denied.pid');
+  const child = script('nojob-denied-child.mjs', `import { writeFileSync } from 'node:fs'; writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setTimeout(() => {}, 60000);`);
+  const top = script('nojob-denied-top.mjs', `import { spawn } from 'node:child_process'; spawn(process.execPath, [${JSON.stringify(child)}], { stdio: 'ignore' }); setTimeout(() => {}, 60000);`);
+  const res = await withEnv({ FF_TEST_NOJOB: '1' }, () => runShell(`"${process.execPath}" "${top}"`, { timeoutMs: 4000, taskkillCommand: [process.execPath, ['-e', 'process.exit(1)']] }));
+  const pid = existsSync(pidFile) ? Number(readFileSync(pidFile, 'utf8')) : null;
+  try {
+    assert.equal(res.timedOut, true);
+    assert.ok(pid, 'child never started');
+    assert.ok(res.survivors.some((s) => s.pid === pid), `linked child ${pid} missing from ${JSON.stringify(res.survivors)}`);
+    assert.ok(res.cleanupErrors.some((e) => /taskkill/.test(e)), JSON.stringify(res.cleanupErrors));
+  } finally {
+    for (const s of res.survivors) try { process.kill(s.pid); } catch {}
+    if (pid) try { process.kill(pid); } catch {}
+  }
+});
+
+test('runShell: a command that finishes is not reported as timed out while its leftover process still holds the output pipes', { skip: process.platform !== 'win32' && 'Windows job objects only' }, async () => {
+  const sleeper = script('drain-sleeper.mjs', 'setTimeout(() => {}, 8000);');
+  const quit = script('drain-quit.mjs', `import { spawn } from 'node:child_process'; spawn(process.execPath, [${JSON.stringify(sleeper)}], { detached: true, stdio: 'inherit' }).unref();`);
+  const cmd = `"${process.execPath}" "${quit}"`;
+  const probe = await runShell(cmd, { timeoutMs: 60000, drainMs: 0 }); // how long until the helper exits
+  const t0 = Date.now();
+  const again = await runShell(cmd, { timeoutMs: 60000, drainMs: 0 });
+  const exitMs = Date.now() - t0;
+  const pids = [...(probe.leftovers ?? []), ...(again.leftovers ?? [])];
+  try {
+    // a 3 s drain window with the timeout landing 1 s into it
+    const res = await runShell(cmd, { timeoutMs: exitMs + 1000, drainMs: 3000 });
+    pids.push(...(res.leftovers ?? []));
+    assert.equal(res.timedOut, undefined, 'a finished command was reported as timed out');
+    assert.equal(res.code, 0);
+  } finally {
+    for (const p of pids) try { process.kill(p); } catch {}
   }
 });
 

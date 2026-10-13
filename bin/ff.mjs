@@ -12,7 +12,7 @@ import { summarize, renderSummary, refreshOutcomes } from '../lib/stats.mjs';
 import { runEval } from '../lib/eval.mjs';
 import { writePlanMarker, readPlanMarker, clearPlanMarker, claudePlanMetrics, codexPlanMetrics, planShape } from '../lib/planmetrics.mjs';
 import { randomUUID } from 'node:crypto';
-import { parseOpts } from '../lib/opts.mjs';
+import { parseOpts, positiveInt } from '../lib/opts.mjs';
 import { publishPlan } from '../lib/publish.mjs';
 import * as gh from '../lib/github.mjs';
 
@@ -34,6 +34,13 @@ const USAGE = `feature-flow (ff)
                           A/B the plan N times per config variant in a throwaway sandbox repo
   ff config               print the merged config
   ff persona <name>       print the effective persona text`;
+
+const SPECS = {
+  init: { bools: ['trust'] },
+  plan: { bools: ['bg'], values: ['name', 'session'], optional: ['finish'] },
+  stats: { bools: ['refresh', 'by-label', 'json'], values: ['label'] },
+  eval: { bools: [], values: ['plan', 'runs', 'reset'] },
+};
 
 const repoRoot = async () => (await repoInfo(process.cwd())).mainRoot;
 
@@ -80,7 +87,7 @@ async function doctor() {
 }
 
 async function init(args = []) {
-  const trust = parseOpts(args).trust === true;
+  const trust = parseOpts(args, SPECS.init).trust === true;
   const root = await repoRoot();
   await gh.ensureLabels(root);
   mkdirSync(join(root, '.agents', 'feature-flow', 'personas'), { recursive: true });
@@ -122,7 +129,7 @@ function recordPlanSession({ ev, dir, cfg, persona, planId, sessionId = planId, 
 }
 
 async function plan(args) {
-  const o = parseOpts(args);
+  const o = parseOpts(args, SPECS.plan);
   const info = await repoInfo(process.cwd());
   const root = info.mainRoot;
   const cfg = loadConfig(root);
@@ -188,14 +195,14 @@ async function publish(file) {
 }
 
 async function runCmd(epic) {
-  const results = await runEpic(Number(epic));
+  const results = await runEpic(positiveInt(epic, 'epic number'));
   console.log('\nticket  state          pr');
   for (const r of results) console.log(`#${String(r.ticket).padEnd(6)} ${r.state.padEnd(14)} ${r.pr ?? r.error ?? ''}`);
   return results.some((r) => r.state === 'needs-human') ? 2 : 0;
 }
 
 async function stats(args) {
-  const o = parseOpts(args);
+  const o = parseOpts(args, SPECS.stats);
   const info = await repoInfo(process.cwd());
   const dir = join(info.gitCommonDir, 'feature-flow');
   let events = readEvents(dir);
@@ -204,7 +211,7 @@ async function stats(args) {
     console.log(`refreshed ${n} PR outcome(s)`);
     events = readEvents(dir);
   }
-  const epic = o._[0] ? Number(o._[0]) : undefined;
+  const epic = o._[0] ? positiveInt(o._[0], 'epic number') : undefined;
   const groups = o['by-label'] ? [...new Set(events.map((e) => e.label).filter(Boolean))] : [o.label];
   for (const label of groups) {
     const s = summarize(events, { epic, label });
@@ -214,21 +221,27 @@ async function stats(args) {
 }
 
 async function evalCmd(args) {
-  const o = parseOpts(args);
+  const o = parseOpts(args, SPECS.eval);
   if (!o.plan || !o._.length) throw new Error('usage: ff eval --plan <plan.json> --runs N --reset "<cmd>" <variant.json>...');
-  await runEval({ planFile: o.plan, runs: Number(o.runs ?? 1), variantFiles: o._, resetCommand: o.reset ?? 'node eval/reset.mjs' });
+  await runEval({ planFile: o.plan, runs: o.runs === undefined ? 1 : positiveInt(o.runs, '--runs'), variantFiles: o._, resetCommand: o.reset ?? 'node eval/reset.mjs' });
   return 0;
 }
 
 const [cmd, ...rest] = process.argv.slice(2);
+// Positional-only commands: reject stray flags, honour `--`.
+const positional = () => parseOpts(rest, { bools: [], values: [] })._;
 const commands = {
-  doctor, init: () => init(rest), plan: () => plan(rest), publish: () => publish(rest[0]), run: () => runCmd(rest[0]),
+  doctor, init: () => init(rest), plan: () => plan(rest), publish: () => publish(positional()[0]), run: () => runCmd(positional()[0]),
   stats: () => stats(rest), eval: () => evalCmd(rest),
-  approve: async () => { await gh.editLabels(rest[0], { add: ['plan-approved'] }, await repoRoot()); return 0; },
+  approve: async () => { await gh.editLabels(positiveInt(positional()[0], 'epic number'), { add: ['plan-approved'] }, await repoRoot()); return 0; },
   config: async () => { console.log(JSON.stringify(loadConfig(await repoRoot().catch(() => null)), null, 2)); return 0; },
-  persona: async () => { process.stdout.write(loadPersona(rest[0], await repoRoot().catch(() => null)).text); return 0; },
+  persona: async () => { process.stdout.write(loadPersona(positional()[0], await repoRoot().catch(() => null)).text); return 0; },
 };
-if (!commands[cmd] || (['publish', 'run', 'approve', 'persona'].includes(cmd) && !rest[0])) {
+if (cmd === '--help' || rest.includes('--help')) {
+  console.log(USAGE);
+  process.exit(0);
+}
+if (!Object.hasOwn(commands, cmd) || (['publish', 'run', 'approve', 'persona'].includes(cmd) && !rest[0])) {
   console.log(USAGE);
   process.exit(cmd ? 1 : 0);
 }

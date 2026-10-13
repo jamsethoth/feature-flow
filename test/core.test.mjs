@@ -285,3 +285,59 @@ test('pool never exceeds its limit and keeps result order', async () => {
   assert.equal(peak, 2);
   assert.deepEqual(res, [10, 20, 30, 40, 50]);
 });
+
+test('a failed label update is logged and recorded as an event with the ticket number', async () => {
+  const { setLabels } = await import('../lib/run.mjs');
+  const logs = [], events = [];
+  const edit = async () => { throw new Error('gh: 502'); };
+  await setLabels(7, { add: ['needs-human'], remove: ['in-progress'] }, { edit, log: (m) => logs.push(m), ev: (type, d) => events.push({ type, ...d }) });
+  assert.ok(logs.some((m) => m.includes('#7') && m.includes('502')));
+  assert.equal(events.length, 1);
+  assert.equal(events[0].type, 'label_error');
+  assert.equal(events[0].ticket, 7);
+});
+
+test('in-progress tickets with no live run lock are reported as stuck', async () => {
+  const { stuckTickets } = await import('../lib/run.mjs');
+  const dir = mkdtempSync(join(tmpdir(), 'ff-lock-'));
+  const tickets = [
+    { number: 1, state: 'OPEN', labels: [{ name: 'in-progress' }] },
+    { number: 2, state: 'OPEN', labels: [{ name: 'ready-for-qa' }] },
+  ];
+  assert.deepEqual(stuckTickets(tickets, { logDir: dir, epic: 5, alive: () => true }).map((t) => t.number), [1], 'no lock file: stuck');
+  writeFileSync(join(dir, '5.lock'), JSON.stringify({ pid: 4242 }));
+  assert.deepEqual(stuckTickets(tickets, { logDir: dir, epic: 5, alive: (pid) => pid === 4242 }), [], 'live pid: not stuck');
+  assert.deepEqual(stuckTickets(tickets, { logDir: dir, epic: 5, alive: () => false }).map((t) => t.number), [1], 'dead pid: stuck');
+});
+
+test('an epic with no sub-issues, or nothing ready, explains why and exits non-zero', async () => {
+  const { noWorkReason, exitCodeFor } = await import('../lib/run.mjs');
+  assert.match(noWorkReason([], []), /no sub-issues/i);
+  assert.match(noWorkReason([{ number: 1 }], []), /nothing ready/i);
+  assert.equal(noWorkReason([{ number: 1 }], [{ number: 1 }]), null);
+  assert.notEqual(exitCodeFor([]), 0);
+  assert.equal(exitCodeFor([{ ticket: 1, state: 'ready-for-qa' }]), 0);
+  assert.notEqual(exitCodeFor([{ ticket: 1, state: 'needs-human' }]), 0);
+});
+
+test('refreshOutcomes counts PRs it could not refresh', async () => {
+  const { refreshOutcomes } = await import('../lib/stats.mjs');
+  const events = [
+    { run: 'r', epic: 1, ticket: 1, type: 'ticket_end', state: 'ready-for-qa', pr: 9 },
+    { run: 'r', epic: 1, ticket: 2, type: 'ticket_end', state: 'ready-for-qa', pr: 10 },
+  ];
+  const out = [];
+  const view = async (pr) => (pr === 9 ? JSON.stringify({ state: 'MERGED', commits: [] }) : '');
+  const res = await refreshOutcomes(events, process.cwd(), (type, d) => out.push({ type, ...d }), view);
+  assert.deepEqual(res, { refreshed: 1, failed: 1 });
+  assert.equal(out.length, 1);
+});
+
+test('a failing diff stat is logged and not recorded as zeros', async () => {
+  const { safeDiffStats } = await import('../lib/run.mjs');
+  const logs = [];
+  const diff = await safeDiffStats(async () => { throw new Error('bad ref'); }, (m) => logs.push(m));
+  assert.equal(diff, undefined);
+  assert.ok(logs.some((m) => m.includes('bad ref')));
+  assert.equal((await safeDiffStats(async () => '1\t2\ta.mjs\n', () => {})).insertions, 1);
+});

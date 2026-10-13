@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { loadConfig } from '../lib/config.mjs';
-import { runEpic } from '../lib/run.mjs';
+import { runEpic, stageCall } from '../lib/run.mjs';
+import { adapters } from '../lib/adapters.mjs';
 import { stageTools, skillsBlock } from '../lib/toolkit.mjs';
 import { mkdtempSync, mkdirSync, writeFileSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
@@ -32,12 +33,46 @@ test('shipped defaults carry stageTools and none of the replaced keys', () => {
   assert.equal(cfg.toolkit.claude.plugins, undefined);
   assert.equal(cfg.toolkit.codex.disableMcp, undefined);
   assert.equal(cfg.toolkit.codex.disablePlugins, undefined);
-  for (const s of ['plan', 'implement', 'review', 'escalate']) {
-    for (const list of ['skills', 'mcp', 'plugins']) assert.ok(Array.isArray(cfg.stageTools[s][list]), `${s}.${list}`);
-  }
-  assert.deepEqual(cfg.stageTools.implement.skills, ['tdd']);
-  assert.ok(cfg.stageTools.review.plugins.includes('ponytail'));
-  assert.match(skillsBlock(cfg.stageTools.implement.skills), /`tdd`/);
+  assert.deepEqual(cfg.stageTools, {
+    plan: { skills: ['grilling', 'to-tickets', 'writing-for-agents'], mcp: [], plugins: [] },
+    implement: { skills: ['mattpocock-skills:tdd'], mcp: [], plugins: ['ponytail'] },
+    review: { skills: ['mattpocock-skills:code-review'], mcp: [], plugins: ['ponytail'] },
+    escalate: { skills: ['mattpocock-skills:diagnosing-bugs', 'mattpocock-skills:tdd'], mcp: [], plugins: ['ponytail'] },
+  });
+  assert.match(skillsBlock(cfg.stageTools.implement.skills), /`mattpocock-skills:tdd`/);
+});
+
+test('stageTools: qualified Claude plugin name matches the full installed key; plan plugins are not validated', () => {
+  const claudeHome = mkdtempSync(join(tmpdir(), 'ff-home-'));
+  const inst = join(claudeHome, 'cache', 'alpha');
+  mkdirSync(inst, { recursive: true });
+  mkdirSync(join(claudeHome, 'plugins'), { recursive: true });
+  writeFileSync(join(claudeHome, 'plugins', 'installed_plugins.json'), JSON.stringify({ plugins: { 'alpha@mkt': [{ installPath: inst }] } }));
+  const cfg = (plugins) => ({ implement: { cli: 'claude' }, plan: { cli: 'claude' }, toolkit: {}, stageTools: { implement: { plugins }, plan: { plugins } } });
+  assert.deepEqual(stageTools(cfg(['alpha@mkt']), 'implement', { claudeHome }).args, ['--plugin-dir', inst]);
+  assert.deepEqual(stageTools(cfg(['alpha@other']), 'implement', { claudeHome }).missing, ['plugin alpha@other']);
+  const plan = stageTools(cfg(['nope']), 'plan', { claudeHome });
+  assert.deepEqual(plan.missing, []);
+  assert.deepEqual(plan.tools.plugins, ['nope']);
+});
+
+test('stageCall passes the resolved stage args to the adapter and puts tools in the stage_call event', async () => {
+  const claudeHome = mkdtempSync(join(tmpdir(), 'ff-home-'));
+  const inst = join(claudeHome, 'cache', 'alpha');
+  mkdirSync(inst, { recursive: true });
+  mkdirSync(join(claudeHome, 'plugins'), { recursive: true });
+  writeFileSync(join(claudeHome, 'plugins', 'installed_plugins.json'), JSON.stringify({ plugins: { 'alpha@mkt': [{ installPath: inst }] } }));
+  const cfg = { implement: { cli: 'claude', model: 'm', effort: 'low' }, toolkit: {}, stageTools: { implement: { skills: ['s1'], mcp: ['m1'], plugins: ['alpha'] } } };
+  const seen = [];
+  const events = [];
+  const real = adapters.claude;
+  adapters.claude = async (opts) => { seen.push(opts); return { out: { status: 'done' }, usage: { input: 1, cached: 0, output: 1 }, session: 's' }; };
+  try {
+    await stageCall({ cfg, stageName: 'implement', phase: 'red', round: 0, prompt: 'P', cwd: '.', commands: {}, style: '', persona: { name: 'x', hash: 'h' }, ev: (t, d) => events.push([t, d]), log: () => {}, homes: { claudeHome } });
+  } finally { adapters.claude = real; }
+  assert.match(seen[0].prompt, /`s1`/);
+  assert.deepEqual(seen[0].stageArgs, ['--plugin-dir', inst]);
+  assert.deepEqual(events.find(([t]) => t === 'stage_call')[1].tools, { skills: ['s1'], mcp: ['m1'], plugins: ['alpha'] });
 });
 
 test('stageTools: Claude plugins become --plugin-dir args and a missing one is reported', () => {

@@ -27,8 +27,8 @@
   },
   "stageTools": {
     "plan":      { "skills": ["grilling", "to-tickets", "writing-for-agents"], "mcp": [], "plugins": [] },
-    "implement": { "skills": ["tdd"], "mcp": [], "plugins": ["ponytail", "mattpocock-skills"] },
-    "review":    { "skills": ["code-review"], "mcp": [], "plugins": ["ponytail"] },
-    "escalate":  { "skills": ["diagnosing-bugs", "tdd"], "mcp": [], "plugins": ["ponytail", "mattpocock-skills"] }
+    "implement": { "skills": ["mattpocock-skills:tdd"], "mcp": [], "plugins": ["ponytail"] },
+    "review":    { "skills": ["mattpocock-skills:code-review"], "mcp": [], "plugins": ["ponytail"] },
+    "escalate":  { "skills": ["mattpocock-skills:diagnosing-bugs", "mattpocock-skills:tdd"], "mcp": [], "plugins": ["ponytail"] }
   }
 }

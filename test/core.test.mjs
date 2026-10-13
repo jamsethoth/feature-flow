@@ -399,6 +399,16 @@ test('parseCodexSkills extracts names (including plugin-namespaced) and files fr
     [{ name: 'caveman-commit', file: 'r9/SKILL.md' }, { name: 'mattpocock-skills:tdd', file: 'C:/p/tdd/SKILL.md' }]);
 });
 
+test('parseCodexSkills expands Skill roots aliases and decodes JSON backslashes, so repo skills stay on', () => {
+  const text = JSON.stringify({ input: [{ text: 'Skill roots\n- `r0` = `C:/home/.codex/skills`\n- `r1` = `C:/repo/.agents/skills`\n\n## Skills\n'
+    + '- caveman: Terse. (file: r0/caveman/SKILL.md)\n- local: Aliased. (file: r1/local/SKILL.md)\n- win: Backslashed. (file: C:\\repo\\.agents\\skills\\win\\SKILL.md)\n' }] });
+  const skills = toolkitMod.parseCodexSkills(text);
+  assert.deepEqual(skills, [{ name: 'caveman', file: 'C:/home/.codex/skills/caveman/SKILL.md' },
+    { name: 'local', file: 'C:/repo/.agents/skills/local/SKILL.md' }, { name: 'win', file: 'C:\\repo\\.agents\\skills\\win\\SKILL.md' }]);
+  const { args } = codexToolkit({}, {}, { plugins: [], mcp: [], skills }, 'C:\\repo');
+  assert.deepEqual(args.filter((a) => a.startsWith('skills.config=')), ['skills.config=[{name="caveman",enabled=false}]']);
+});
+
 const skillRoot = 'C:\\repo';
 const skillListing = () => ({ plugins: ['ponytail@ponytail', 'mattpocock-skills@mattpocock'], mcp: [], skills: [
   { name: 'caveman', file: 'C:/home/.codex/skills/caveman/SKILL.md' },

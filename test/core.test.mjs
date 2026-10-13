@@ -32,6 +32,36 @@ test('parseCommands reads the ## Commands section only', () => {
   assert.deepEqual(parseCommands(md), { test: 'npm test', lint: 'npm run lint' });
 });
 
+test('mergeConfig deep-merges nested objects; arrays and scalars replace', () => {
+  const low = { toolkit: { claude: { hooks: ['a'], plugins: ['p1', 'p2'] } }, contextBudget: { plan: 5, byModel: { opus: 1, sonnet: 2 } } };
+  const out = mergeConfig(low, { toolkit: { claude: { plugins: ['p3'] } }, contextBudget: { byModel: { opus: 9 } } });
+  assert.deepEqual(out.toolkit.claude, { hooks: ['a'], plugins: ['p3'] });
+  assert.deepEqual(out.contextBudget, { plan: 5, byModel: { opus: 9, sonnet: 2 } });
+  assert.deepEqual(low.contextBudget.byModel, { opus: 1, sonnet: 2 });
+});
+
+test('mergeConfig ignores __proto__, constructor and prototype keys', () => {
+  const out = mergeConfig({ a: { b: 1 } }, JSON.parse('{"__proto__":{"polluted":1},"constructor":{"x":1},"prototype":{"y":1},"a":{"__proto__":{"deep":1}}}'));
+  assert.equal({}.polluted, undefined);
+  assert.equal(out.polluted, undefined);
+  assert.equal(Object.hasOwn(out, 'constructor'), false);
+  assert.equal(Object.hasOwn(out, 'prototype'), false);
+  assert.equal(out.a.deep, undefined);
+  assert.deepEqual(out.a, { b: 1 });
+});
+
+test('parseCommands accepts hyphenated names', () => {
+  assert.deepEqual(parseCommands('## Commands\n- lint-js: `x`\n'), { 'lint-js': 'x' });
+});
+
+test('parseCommands warns about duplicate names via the warn callback', () => {
+  const warnings = [];
+  const out = parseCommands('## Commands\n- test: `a`\n- test: `b`\n', (m) => warnings.push(m));
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /test/);
+  assert.equal(out.test, 'b');
+});
+
 test('topoSort orders dependencies first and rejects cycles/unknowns', () => {
   const order = topoSort([{ key: 'B', dependsOn: ['A'] }, { key: 'A' }, { key: 'C', dependsOn: ['A', 'B'] }]).map((t) => t.key);
   assert.deepEqual(order, ['A', 'B', 'C']);

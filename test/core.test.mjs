@@ -7,7 +7,7 @@ import { stageForRound, pool, cleanupMerged, checkRed } from '../lib/run.mjs';
 import * as runMod from '../lib/run.mjs';
 import { codexUsage, recordedSandbox, apiCost, lastQuotaPct, invoke } from '../lib/adapters.mjs';
 import { styleBlock } from '../lib/stages.mjs';
-import { withPrefixedTwins, claudeToolkit, findClaudePlugin, codexMcpServers, codexPlugins, codexToolkit, claudeTrusted, grantClaudeTrust } from '../lib/toolkit.mjs';
+import { withPrefixedTwins, claudeToolkit, findClaudePlugin, codexToolkit, codexListings, claudeTrusted, grantClaudeTrust } from '../lib/toolkit.mjs';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, readdirSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { commitAll, discardChanges, ensureWorktree } from '../lib/git.mjs';
@@ -215,6 +215,10 @@ test('loadConfig rejects replaced stageSkills / toolkit.claude.plugins keys, nam
   assert.throws(() => loadConfig(layer({ stageSkills: {} })), (e) => e.message.includes('stageSkills') && e.message.includes('stageTools.<stage>.skills'));
   assert.throws(() => loadConfig(layer({ toolkit: { claude: { plugins: [] } } })),
     (e) => e.message.includes('toolkit.claude.plugins') && e.message.includes('stageTools.<stage>.plugins'));
+  assert.throws(() => loadConfig(layer({ toolkit: { codex: { disableMcp: true } } })),
+    (e) => e.message.includes('toolkit.codex.disableMcp') && e.message.includes('stageTools.<stage>.mcp'));
+  assert.throws(() => loadConfig(layer({ toolkit: { codex: { disablePlugins: [] } } })),
+    (e) => e.message.includes('toolkit.codex.disablePlugins') && e.message.includes('stageTools.<stage>.plugins'));
   // One line: ff doctor shows only an error's first line.
   assert.throws(() => loadConfig(layer({ stageSkills: {}, toolkit: { claude: { plugins: [] } } })),
     (e) => { const first = e.message.split('\n')[0]; return first.includes('stageSkills') && first.includes('toolkit.claude.plugins'); });
@@ -233,6 +237,8 @@ test('shipped defaults carry stageTools and drop the old Claude keys', () => {
   assert.equal(cfg.stageSkills, undefined);
   assert.equal(cfg.toolkit.claude.plugins, undefined);
   assert.deepEqual(cfg.toolkit.claude.hooks, []);
+  assert.equal(cfg.toolkit.codex.disableMcp, undefined);
+  assert.equal(cfg.toolkit.codex.disablePlugins, undefined);
 });
 
 test('stageCallTools and configSummary carry stageTools', () => {
@@ -277,23 +283,97 @@ test('findClaudePlugin (Codex mode fallback) still takes the first of duplicate 
   assert.equal(findClaudePlugin('ponytail', home), a);
 });
 
-test('codexMcpServers lists top-level server tables only', () => {
-  const home = mkdtempSync(join(tmpdir(), 'ff-codex-'));
-  writeFileSync(join(home, 'config.toml'), '[mcp_servers.playwright]\nargs=[]\n[mcp_servers.node_repl.env]\nX=1\n[mcp_servers.serena]\n[projects."/x"]\n');
-  assert.deepEqual(codexMcpServers(home), ['playwright', 'serena']);
+// Stub `codex plugin list --json` / `codex mcp list --json`; counts calls per subcommand.
+const listRunner = (plugins, mcp, calls = {}) => async (cmd, args) => {
+  const key = args.slice(0, 2).join(' ');
+  calls[key] = (calls[key] ?? 0) + 1;
+  if (key === 'plugin list') return { stdout: typeof plugins === 'string' ? plugins : JSON.stringify(plugins) };
+  if (key === 'mcp list') return { stdout: typeof mcp === 'string' ? mcp : JSON.stringify(mcp) };
+  throw new Error(`unexpected ${cmd} ${args.join(' ')}`);
+};
+const codexListing = (plugins, mcp = []) => ({ plugins, mcp });
+
+test('codexListings reads plugin ids and MCP server names through the runner', async () => {
+  const runner = listRunner({ installed: [{ pluginId: 'ponytail@ponytail' }, { pluginId: 'github@openai-curated' }] }, [{ name: 'playwright' }]);
+  assert.deepEqual(await codexListings({ runner }), { plugins: ['ponytail@ponytail', 'github@openai-curated'], mcp: ['playwright'] });
+});
+
+test('codexListings throws naming the command, never returning empty lists', async () => {
+  const good = { installed: [{ pluginId: 'a@b' }] };
+  const failing = async (cmd, args) => { if (args[0] === 'mcp') throw new Error('exit 1'); return { stdout: JSON.stringify(good) }; };
+  await assert.rejects(codexListings({ runner: failing }), /codex mcp list --json/);
+  for (const bad of ['not json', { installed: {} }, { installed: [{}] }, { installed: [{ pluginId: '' }] }]) {
+    await assert.rejects(codexListings({ runner: listRunner(bad, []) }), /codex plugin list --json/, JSON.stringify(bad));
+  }
+  for (const bad of ['not json', {}, [{}], [{ name: '' }]]) {
+    await assert.rejects(codexListings({ runner: listRunner(good, bad) }), /codex mcp list --json/, JSON.stringify(bad));
+  }
+});
+
+test('codexListings runs each command at most once per process', async () => {
+  const calls = {};
+  const runner = listRunner({ installed: [] }, [], calls);
+  await codexListings({ runner });
+  await codexListings({ runner });
+  await codexListings({ runner });
+  assert.deepEqual(calls, { 'plugin list': 1, 'mcp list': 1 });
+});
+
+test('codexToolkit enables listed plugins and disables every other installed one', () => {
+  const listing = codexListing(['ponytail@ponytail', 'github@openai-curated']);
+  const { args, missing } = codexToolkit({}, { plugins: ['ponytail'] }, listing);
+  assert.ok(args.includes('plugins."ponytail@ponytail".enabled=true'));
+  assert.ok(args.includes('plugins."github@openai-curated".enabled=false'));
+  assert.deepEqual(missing, []);
+  assert.ok(codexToolkit({}, { plugins: ['ponytail@ponytail'] }, listing).args.includes('plugins."ponytail@ponytail".enabled=true'));
+  assert.deepEqual(codexToolkit({}, { plugins: ['ponytail@other'] }, listing).missing, ['plugin ponytail@other']);
+  assert.deepEqual(codexToolkit({}, { plugins: ['x'] }, codexListing(['x@a', 'x@b'])).missing, ['plugin x ambiguous: x@a, x@b']);
+});
+
+test('codexToolkit disables every listed MCP server whatever the stage mcp list says', () => {
+  const { args } = codexToolkit({}, { mcp: ['playwright'], plugins: [] }, codexListing([], ['playwright', 'node_repl', 'my server']));
+  assert.ok(args.includes('mcp_servers.playwright.enabled=false'));
+  assert.ok(args.includes('mcp_servers.node_repl.enabled=false'));
+  assert.ok(args.includes('mcp_servers."my server".enabled=false'));
 });
 
 test('codexToolkit passes the Windows sandbox mode and hook switch', () => {
-  const { args } = codexToolkit({ hooks: false, windowsSandbox: 'mxc' });
+  const { args } = codexToolkit({ hooks: false, windowsSandbox: 'mxc' }, {}, codexListing([]));
   assert.ok(args.join(' ').includes('features.hooks=false'));
   assert.equal(args.includes('windows.sandbox="mxc"'), process.platform === 'win32');
-  assert.deepEqual(codexToolkit({ useUserConfig: false }).args, ['--ignore-user-config']);
 });
 
-test('codexPlugins lists configured plugin tables', () => {
-  const home = mkdtempSync(join(tmpdir(), 'ff-codex-'));
-  writeFileSync(join(home, 'config.toml'), '[plugins."browser@openai-bundled"]\nenabled=true\n[plugins."ponytail@ponytail"]\n[hooks.state."x"]\n');
-  assert.deepEqual(codexPlugins(home), ['browser@openai-bundled', 'ponytail@ponytail']);
+test('codexToolkit with useUserConfig false reports listed plugins missing', () => {
+  assert.deepEqual(codexToolkit({ useUserConfig: false }, { plugins: ['ponytail'] }),
+    { args: ['--ignore-user-config'], preamble: '', missing: ['plugin ponytail (useUserConfig is false)'] });
+});
+
+const codexInvoke = (toolkit, plugins, runner) => invoke({ stage: { cli: 'codex', persona: 'reviewer', model: 'x', effort: 'low' }, stageName: 'review',
+  persona: { path: 'p', text: '' }, prompt: '', schema: {}, cwd: mkdtempSync(join(tmpdir(), 'ff-cwd-')), write: false, commands: {}, toolkit,
+  tools: { skills: [], mcp: [], plugins }, runner });
+
+test('codex adapter rejects a stage with a missing plugin before spawning codex exec', async (t) => {
+  const calls = [];
+  const lister = listRunner({ installed: [{ pluginId: 'ponytail@ponytail' }] }, []);
+  const runner = async (cmd, args) => { calls.push(args[0]); return lister(cmd, args); };
+  // Belt and braces: an adapter that ignored `runner` must not reach the real codex.
+  const path = process.env.PATH;
+  process.env.PATH = '';
+  t.after(() => { process.env.PATH = path; });
+  await assert.rejects(codexInvoke({ codex: {} }, ['ff-no-such-plugin-xyz'], runner),
+    (err) => /review tools not found: .*plugin ff-no-such-plugin-xyz/.test(err.message));
+  assert.ok(!calls.includes('exec'));
+  const none = [];
+  await assert.rejects(codexInvoke({ codex: { useUserConfig: false } }, ['ponytail'], async (c, a) => { none.push(a); return { stdout: '' }; }),
+    /review tools not found: .*plugin ponytail \(useUserConfig is false\)/);
+  assert.deepEqual(none, []);
+});
+
+test('the old Codex config.toml parsers are gone from lib/ and test/', () => {
+  const old = new RegExp(['codexMcp', 'Servers|codex', 'Plugins\\b'].join(''));
+  for (const d of ['lib', 'test']) for (const f of readdirSync(join(ROOT, d))) {
+    assert.deepEqual(readFileSync(join(ROOT, d, f), 'utf8').split('\n').filter((l) => old.test(l)), [], f);
+  }
 });
 
 test('commitAll commits everything or returns null; discardChanges resets the worktree', async () => {

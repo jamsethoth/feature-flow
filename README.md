@@ -104,7 +104,7 @@ Each variant file is a partial config merged over the repo's override; runs are 
 ## Configure
 
 Layers, later wins: `defaults/feature-flow.json` (this package) → `~/.agents/feature-flow/feature-flow.json`
-→ `<repo>/.agents/feature-flow/feature-flow.json`. Stage objects merge key by key, so an override can be just:
+→ `<repo>/.agents/feature-flow/feature-flow.json`. Plain objects merge key by key at every level; arrays and scalars replace the lower layer's value. So an override can be just:
 
 ```json
 { "review": { "cli": "claude", "model": "opus" }, "escalationEnabled": true }

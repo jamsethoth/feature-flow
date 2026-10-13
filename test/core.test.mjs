@@ -4,10 +4,12 @@ import { mergeConfig, parseCommands, loadConfig, loadPersona, budgetFor, plansDi
 import { topoSort } from '../lib/publish.mjs';
 import { isReady } from '../lib/github.mjs';
 import { stageForRound, pool, cleanupMerged, checkRed } from '../lib/run.mjs';
-import { codexUsage, recordedSandbox, apiCost, lastQuotaPct } from '../lib/adapters.mjs';
+import * as runMod from '../lib/run.mjs';
+import { codexUsage, recordedSandbox, apiCost, lastQuotaPct, invoke } from '../lib/adapters.mjs';
 import { styleBlock, planOpening } from '../lib/stages.mjs';
-import { withPrefixedTwins, claudeToolkit, findClaudePlugin, codexMcpServers, codexPlugins, codexToolkit, claudeTrusted, grantClaudeTrust } from '../lib/toolkit.mjs';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
+import { withPrefixedTwins, claudeToolkit, findClaudePlugin, codexToolkit, codexListings, claudeTrusted, grantClaudeTrust } from '../lib/toolkit.mjs';
+import * as toolkitMod from '../lib/toolkit.mjs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, readdirSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { commitAll, discardChanges, ensureWorktree } from '../lib/git.mjs';
 import { parseOpts, positiveInt } from '../lib/opts.mjs';
@@ -17,6 +19,8 @@ import { planShape, claudeTranscriptMetrics, codexTranscriptMetrics, lastRequest
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
+
+const ROOT = fileURLToPath(new URL('..', import.meta.url));
 
 test('mergeConfig merges stage objects key by key, later layers win', () => {
   const out = mergeConfig({ implement: { cli: 'claude', model: 'sonnet' }, maxParallel: 2 }, { implement: { model: 'opus' }, maxParallel: 1 });
@@ -130,12 +134,129 @@ test('withPrefixedTwins adds rewritten forms of Bash rules only', () => {
 });
 
 test('claudeToolkit builds the rtk hook settings and reports unknown entries', () => {
-  const tk = claudeToolkit({ hooks: ['rtk', 'nope'], plugins: [] });
+  const home = mkdtempSync(join(tmpdir(), 'ff-home-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'ff-cwd-'));
+  const tk = claudeToolkit({ hooks: ['rtk', 'nope'] }, { plugins: [] }, { home, cwd });
   assert.equal(tk.args[0], '--settings');
   assert.match(tk.args[1], /rtk hook claude/);
   assert.deepEqual(tk.prefixes, ['rtk ']);
   assert.deepEqual(tk.missing, ['hook nope (unknown)']);
-  assert.deepEqual(claudeToolkit(undefined), { args: [], prefixes: [], missing: [] });
+  assert.deepEqual(claudeToolkit(undefined, undefined, { home, cwd }), { args: ['--settings', JSON.stringify({ enabledPlugins: {} })], prefixes: [], missing: [] });
+});
+
+// A Claude home with alpha@mkt and beta@mkt installed, and a cwd whose project/local settings enable more.
+function claudeFixture(installed = { 'alpha@mkt': 'alpha', 'beta@mkt': 'beta' }) {
+  const home = mkdtempSync(join(tmpdir(), 'ff-home-'));
+  const plugins = {};
+  for (const [key, dir] of Object.entries(installed)) {
+    const p = join(home, 'cache', dir);
+    mkdirSync(p, { recursive: true });
+    plugins[key] = [{ installPath: p }];
+  }
+  mkdirSync(join(home, 'plugins'), { recursive: true });
+  writeFileSync(join(home, 'plugins', 'installed_plugins.json'), JSON.stringify({ plugins }));
+  const cwd = mkdtempSync(join(tmpdir(), 'ff-cwd-'));
+  mkdirSync(join(cwd, '.claude'));
+  writeFileSync(join(cwd, '.claude', 'settings.json'), JSON.stringify({ enabledPlugins: { 'gamma@other': true, 'cc-plugin-x@builtin': true } }));
+  writeFileSync(join(cwd, '.claude', 'settings.local.json'), JSON.stringify({ enabledPlugins: { 'delta@x': true } }));
+  return { home, cwd };
+}
+
+const settingsOf = (args) => {
+  assert.equal(args.filter((a) => a === '--settings').length, 1);
+  return JSON.parse(args[args.indexOf('--settings') + 1]);
+};
+const pluginDirs = (args) => args.flatMap((a, i) => (a === '--plugin-dir' ? [args[i + 1]] : []));
+
+test('claudeToolkit loads only the listed plugin and disables every other installed/project/local one', () => {
+  const { home, cwd } = claudeFixture();
+  const tk = claudeToolkit({}, { plugins: ['alpha'] }, { home, cwd });
+  assert.deepEqual(tk.missing, []);
+  assert.deepEqual(pluginDirs(tk.args), [join(home, 'cache', 'alpha')]);
+  assert.deepEqual(settingsOf(tk.args).enabledPlugins, { 'alpha@mkt': false, 'beta@mkt': false, 'gamma@other': false, 'delta@x': false });
+});
+
+test('claudeToolkit merges hooks into the same single --settings', () => {
+  const { home, cwd } = claudeFixture();
+  const s = settingsOf(claudeToolkit({ hooks: ['rtk'] }, { plugins: ['alpha'] }, { home, cwd }).args);
+  assert.equal(s.hooks.PreToolUse[0].hooks[0].command, 'rtk hook claude');
+  assert.equal(s.enabledPlugins['alpha@mkt'], false);
+});
+
+test('claudeToolkit plugin names: qualified exact match, qualified miss, ambiguous bare name', () => {
+  const { home, cwd } = claudeFixture();
+  assert.deepEqual(pluginDirs(claudeToolkit({}, { plugins: ['alpha@mkt'] }, { home, cwd }).args), [join(home, 'cache', 'alpha')]);
+  assert.deepEqual(claudeToolkit({}, { plugins: ['alpha@other'] }, { home, cwd }).missing, ['plugin alpha@other']);
+  const two = claudeFixture({ 'alpha@a': 'a', 'alpha@b': 'b' });
+  assert.deepEqual(claudeToolkit({}, { plugins: ['alpha'] }, two).missing, ['plugin alpha ambiguous: alpha@a, alpha@b']);
+});
+
+test('claude adapter rejects a stage with a missing plugin before spawning', async (t) => {
+  const cwd = mkdtempSync(join(tmpdir(), 'ff-cwd-'));
+  let called = false;
+  const runner = async () => { called = true; return { stdout: '{}' }; };
+  // Belt and braces: an adapter that ignored `runner` must not reach the real claude.
+  const path = process.env.PATH;
+  process.env.PATH = '';
+  t.after(() => { process.env.PATH = path; });
+  await assert.rejects(invoke({ stage: { cli: 'claude', persona: 'implementer', model: 'x', effort: 'low' }, stageName: 'review',
+    persona: { path: 'p', text: '' }, prompt: '', schema: {}, cwd, write: false, commands: {}, toolkit: {},
+    tools: { skills: [], mcp: [], plugins: ['ff-no-such-plugin-xyz'] }, runner }),
+  (err) => /review tools not found: .*plugin ff-no-such-plugin-xyz/.test(err.message));
+  assert.equal(called, false);
+});
+
+test('loadConfig rejects replaced stageSkills / toolkit.claude.plugins keys, naming stageTools', () => {
+  const layer = (json) => {
+    const repo = mkdtempSync(join(tmpdir(), 'ff-repo-'));
+    mkdirSync(join(repo, '.agents', 'feature-flow'), { recursive: true });
+    writeFileSync(join(repo, '.agents', 'feature-flow', 'feature-flow.json'), JSON.stringify(json));
+    return repo;
+  };
+  assert.throws(() => loadConfig(layer({ stageSkills: {} })), (e) => e.message.includes('stageSkills') && e.message.includes('stageTools.<stage>.skills'));
+  assert.throws(() => loadConfig(layer({ toolkit: { claude: { plugins: [] } } })),
+    (e) => e.message.includes('toolkit.claude.plugins') && e.message.includes('stageTools.<stage>.plugins'));
+  assert.throws(() => loadConfig(layer({ toolkit: { codex: { disableMcp: true } } })),
+    (e) => e.message.includes('toolkit.codex.disableMcp') && e.message.includes('stageTools.<stage>.mcp'));
+  assert.throws(() => loadConfig(layer({ toolkit: { codex: { disablePlugins: [] } } })),
+    (e) => e.message.includes('toolkit.codex.disablePlugins') && e.message.includes('stageTools.<stage>.plugins'));
+  // One line: ff doctor shows only an error's first line.
+  assert.throws(() => loadConfig(layer({ stageSkills: {}, toolkit: { claude: { plugins: [] } } })),
+    (e) => { const first = e.message.split('\n')[0]; return first.includes('stageSkills') && first.includes('toolkit.claude.plugins'); });
+});
+
+const SHIPPED_STAGE_TOOLS = {
+  plan: { skills: ['grilling', 'to-tickets', 'writing-for-agents'], mcp: [], plugins: [] },
+  implement: { skills: ['mattpocock-skills:tdd'], mcp: [], plugins: ['ponytail'] },
+  review: { skills: ['mattpocock-skills:code-review'], mcp: [], plugins: ['ponytail'] },
+  escalate: { skills: ['mattpocock-skills:diagnosing-bugs', 'mattpocock-skills:tdd'], mcp: [], plugins: ['ponytail'] },
+};
+
+test('shipped defaults carry stageTools and drop the old Claude keys', () => {
+  const cfg = loadConfig(null);
+  assert.deepEqual(cfg.stageTools, SHIPPED_STAGE_TOOLS);
+  assert.equal(cfg.stageSkills, undefined);
+  assert.equal(cfg.toolkit.claude.plugins, undefined);
+  assert.deepEqual(cfg.toolkit.claude.hooks, []);
+  assert.equal(cfg.toolkit.codex.disableMcp, undefined);
+  assert.equal(cfg.toolkit.codex.disablePlugins, undefined);
+});
+
+test('stageCallTools and configSummary carry stageTools', () => {
+  const cfg = loadConfig(null);
+  assert.deepEqual(runMod.stageCallTools(cfg, 'review'), { skills: ['mattpocock-skills:code-review'], mcp: [], plugins: ['ponytail'] });
+  assert.deepEqual(runMod.stageCallTools({}, 'review'), { skills: [], mcp: [], plugins: [] });
+  assert.deepEqual(runMod.configSummary(cfg).stageTools, cfg.stageTools);
+});
+
+test('no lib/, bin/ or README reference to the old keys outside the replaced-key table', () => {
+  const files = ['lib', 'bin'].flatMap((d) => readdirSync(join(ROOT, d)).map((f) => join(ROOT, d, f))).concat(join(ROOT, 'README.md'));
+  for (const f of files) {
+    const lines = readFileSync(f, 'utf8').split('\n').filter((l) => /stageSkills|toolkit\.claude\.plugins/.test(l));
+    // The replaced-key table in config.mjs is the only allowed mention.
+    const allowed = f.endsWith('config.mjs') ? lines.filter((l) => !/^\s*\[?\s*['"](stageSkills|toolkit\.claude\.plugins)['"]/.test(l)) : lines;
+    assert.deepEqual(allowed, [], f);
+  }
 });
 
 test('findClaudePlugin resolves installed and nested synced plugins', () => {
@@ -152,23 +273,131 @@ test('findClaudePlugin resolves installed and nested synced plugins', () => {
   assert.equal(findClaudePlugin('gamma', home), null);
 });
 
-test('codexMcpServers lists top-level server tables only', () => {
-  const home = mkdtempSync(join(tmpdir(), 'ff-codex-'));
-  writeFileSync(join(home, 'config.toml'), '[mcp_servers.playwright]\nargs=[]\n[mcp_servers.node_repl.env]\nX=1\n[mcp_servers.serena]\n[projects."/x"]\n');
-  assert.deepEqual(codexMcpServers(home), ['playwright', 'serena']);
+test('findClaudePlugin (Codex mode fallback) still takes the first of duplicate installs', () => {
+  const home = mkdtempSync(join(tmpdir(), 'ff-home-'));
+  const a = join(home, 'cache', 'a');
+  const b = join(home, 'cache', 'b');
+  mkdirSync(a, { recursive: true });
+  mkdirSync(b, { recursive: true });
+  mkdirSync(join(home, 'plugins'), { recursive: true });
+  writeFileSync(join(home, 'plugins', 'installed_plugins.json'), JSON.stringify({ plugins: { 'ponytail@a': [{ installPath: a }], 'ponytail@b': [{ installPath: b }] } }));
+  assert.equal(findClaudePlugin('ponytail', home), a);
+});
+
+// Stub `codex plugin list --json` / `codex mcp list --json`; counts calls per subcommand.
+const listRunner = (plugins, mcp, calls = {}) => async (cmd, args) => {
+  const key = args.slice(0, 2).join(' ');
+  calls[key] = (calls[key] ?? 0) + 1;
+  if (key === 'plugin list') return { stdout: typeof plugins === 'string' ? plugins : JSON.stringify(plugins) };
+  if (key === 'mcp list') return { stdout: typeof mcp === 'string' ? mcp : JSON.stringify(mcp) };
+  throw new Error(`unexpected ${cmd} ${args.join(' ')}`);
+};
+const codexListing = (plugins, mcp = []) => ({ plugins, mcp });
+
+test('codexListings reads plugin ids and MCP server names through the runner', async () => {
+  const runner = listRunner({ installed: [{ pluginId: 'ponytail@ponytail' }, { pluginId: 'github@openai-curated' }] }, [{ name: 'playwright' }]);
+  assert.deepEqual(await codexListings({ runner }), { plugins: ['ponytail@ponytail', 'github@openai-curated'], mcp: ['playwright'] });
+});
+
+test('codexListings lists local plugins only and only config.toml MCP servers', async () => {
+  const seen = [];
+  const lister = listRunner({ installed: [] }, []);
+  await codexListings({ runner: async (cmd, args) => { seen.push(args.join(' ')); return lister(cmd, args); } });
+  // Remote plugins ignore -c enabled flags, and plugin-provided MCP servers can't be disabled via mcp_servers.<name>.
+  assert.deepEqual(seen.sort(), ['mcp list --json -c features.plugins=false', 'plugin list --json -c features.remote_plugin=false']);
+});
+
+test('codexListings throws naming the command, never returning empty lists', async () => {
+  const good = { installed: [{ pluginId: 'a@b' }] };
+  const failing = async (cmd, args) => { if (args[0] === 'mcp') throw new Error('exit 1'); return { stdout: JSON.stringify(good) }; };
+  await assert.rejects(codexListings({ runner: failing }), /codex mcp list --json/);
+  for (const bad of ['not json', { installed: {} }, { installed: [{}] }, { installed: [{ pluginId: '' }] }]) {
+    await assert.rejects(codexListings({ runner: listRunner(bad, []) }), /codex plugin list --json/, JSON.stringify(bad));
+  }
+  for (const bad of ['not json', {}, [{}], [{ name: '' }]]) {
+    await assert.rejects(codexListings({ runner: listRunner(good, bad) }), /codex mcp list --json/, JSON.stringify(bad));
+  }
+});
+
+test('codexListings runs each command at most once per process', async () => {
+  const calls = {};
+  const runner = listRunner({ installed: [] }, [], calls);
+  await codexListings({ runner });
+  await codexListings({ runner });
+  await codexListings({ runner });
+  assert.deepEqual(calls, { 'plugin list': 1, 'mcp list': 1 });
+});
+
+test('codexListings does not rerun a failed listing', async () => {
+  const calls = {};
+  const runner = listRunner('not json', [], calls);
+  await assert.rejects(codexListings({ runner }), /codex plugin list --json/);
+  await assert.rejects(codexListings({ runner }), /codex plugin list --json/);
+  assert.deepEqual(calls, { 'plugin list': 1, 'mcp list': 1 });
+});
+
+test('codexToolkit enables listed plugins and disables every other installed one', () => {
+  const listing = codexListing(['ponytail@ponytail', 'github@openai-curated']);
+  const { args, missing } = codexToolkit({}, { plugins: ['ponytail'] }, listing);
+  // Codex splits -c keys on every '.' and keeps quotes literally, so ids go inside one inline-table value.
+  const table = '-c plugins={"ponytail@ponytail"={enabled=true},"github@openai-curated"={enabled=false}}';
+  assert.ok(args.join(' ').includes(table), args.join(' '));
+  assert.ok(!args.some((a) => a.startsWith('plugins.')), args.join(' '));
+  assert.deepEqual(args.slice(0, 2), ['-c', 'features.remote_plugin=false']);
+  assert.deepEqual(missing, []);
+  assert.ok(codexToolkit({}, { plugins: ['ponytail@ponytail'] }, listing).args.join(' ').includes(table));
+  assert.ok(codexToolkit({}, {}, codexListing(['a.b@m'])).args.includes('plugins={"a.b@m"={enabled=false}}'));
+  assert.deepEqual(codexToolkit({}, { plugins: ['ponytail@other'] }, listing).missing, ['plugin ponytail@other']);
+  assert.deepEqual(codexToolkit({}, { plugins: ['x'] }, codexListing(['x@a', 'x@b'])).missing, ['plugin x ambiguous: x@a, x@b']);
+});
+
+test('codexToolkit disables every listed MCP server whatever the stage mcp list says', () => {
+  const { args } = codexToolkit({}, { mcp: ['playwright'], plugins: [] }, codexListing([], ['playwright', 'node_repl', 'my server']));
+  assert.ok(args.includes('mcp_servers={"playwright"={enabled=false},"node_repl"={enabled=false},"my server"={enabled=false}}'), args.join(' '));
+  assert.ok(!args.some((a) => a.startsWith('mcp_servers.')), args.join(' '));
+  // TOML forbids a raw DEL in strings; JSON.stringify leaves it as is.
+  assert.ok(codexToolkit({}, {}, codexListing([], ['x\u007fy'])).args.includes('mcp_servers={"x\\u007fy"={enabled=false}}'));
+  // Nothing installed: no empty tables.
+  assert.deepEqual(codexToolkit({}, {}, codexListing([])).args, ['-c', 'features.remote_plugin=false']);
 });
 
 test('codexToolkit passes the Windows sandbox mode and hook switch', () => {
-  const { args } = codexToolkit({ hooks: false, windowsSandbox: 'mxc' });
+  const { args } = codexToolkit({ hooks: false, windowsSandbox: 'mxc' }, {}, codexListing([]));
   assert.ok(args.join(' ').includes('features.hooks=false'));
   assert.equal(args.includes('windows.sandbox="mxc"'), process.platform === 'win32');
-  assert.deepEqual(codexToolkit({ useUserConfig: false }).args, ['--ignore-user-config']);
 });
 
-test('codexPlugins lists configured plugin tables', () => {
-  const home = mkdtempSync(join(tmpdir(), 'ff-codex-'));
-  writeFileSync(join(home, 'config.toml'), '[plugins."browser@openai-bundled"]\nenabled=true\n[plugins."ponytail@ponytail"]\n[hooks.state."x"]\n');
-  assert.deepEqual(codexPlugins(home), ['browser@openai-bundled', 'ponytail@ponytail']);
+test('codexToolkit with useUserConfig false reports listed plugins missing', () => {
+  assert.deepEqual(codexToolkit({ useUserConfig: false }, { plugins: ['ponytail'] }),
+    { args: ['--ignore-user-config', '-c', 'features.remote_plugin=false'], preamble: '', missing: ['plugin ponytail (useUserConfig is false)'] });
+});
+
+const codexInvoke = (toolkit, plugins, runner) => invoke({ stage: { cli: 'codex', persona: 'reviewer', model: 'x', effort: 'low' }, stageName: 'review',
+  persona: { path: 'p', text: '' }, prompt: '', schema: {}, cwd: mkdtempSync(join(tmpdir(), 'ff-cwd-')), write: false, commands: {}, toolkit,
+  tools: { skills: [], mcp: [], plugins }, runner });
+
+test('codex adapter rejects a stage with a missing plugin before spawning codex exec', async (t) => {
+  const calls = [];
+  const lister = listRunner({ installed: [{ pluginId: 'ponytail@ponytail' }] }, []);
+  const runner = async (cmd, args) => { calls.push(args[0]); return lister(cmd, args); };
+  // Belt and braces: an adapter that ignored `runner` must not reach the real codex.
+  const path = process.env.PATH;
+  process.env.PATH = '';
+  t.after(() => { process.env.PATH = path; });
+  await assert.rejects(codexInvoke({ codex: {} }, ['ff-no-such-plugin-xyz'], runner),
+    (err) => /review tools not found: .*plugin ff-no-such-plugin-xyz/.test(err.message));
+  assert.ok(!calls.includes('exec'));
+  const none = [];
+  await assert.rejects(codexInvoke({ codex: { useUserConfig: false } }, ['ponytail'], async (c, a) => { none.push(a); return { stdout: '' }; }),
+    /review tools not found: .*plugin ponytail \(useUserConfig is false\)/);
+  assert.deepEqual(none, []);
+});
+
+test('the old Codex config.toml parsers are gone from lib/ and test/', () => {
+  const old = new RegExp(['codexMcp', 'Servers|codex', 'Plugins\\b'].join(''));
+  for (const d of ['lib', 'test']) for (const f of readdirSync(join(ROOT, d))) {
+    assert.deepEqual(readFileSync(join(ROOT, d, f), 'utf8').split('\n').filter((l) => old.test(l)), [], f);
+  }
 });
 
 test('commitAll commits everything or returns null; discardChanges resets the worktree', async () => {
@@ -521,4 +750,92 @@ test('planner persona writes plans to the plans folder, not the git dir', () => 
   const md = readFileSync(join(fileURLToPath(new URL('..', import.meta.url)), 'personas', 'planner.md'), 'utf8');
   assert.ok(!md.includes('git-common-dir'));
   assert.ok(!md.includes('feature-flow/plans'));
+});
+
+// Stage-tools preflight. Fixture Claude home has ponytail installed; the fake Codex listing has it too.
+function toolFixtures() {
+  const home = mkdtempSync(join(tmpdir(), 'ff-home-'));
+  const pony = join(home, 'pony');
+  mkdirSync(join(home, 'plugins'), { recursive: true });
+  mkdirSync(pony);
+  writeFileSync(join(home, 'plugins', 'installed_plugins.json'), JSON.stringify({ plugins: { 'ponytail@mkt': [{ installPath: pony }] } }));
+  return { home, cwd: home, codexListings: async () => ({ plugins: ['ponytail@mkt'], mcp: [] }) };
+}
+
+// Every gh method records its call and throws, so a run that gets past the preflight stops at its first gh call.
+const recordingGh = () => {
+  const calls = [];
+  const gh = new Proxy({}, { get: (_, k) => async () => { calls.push(k); throw new Error(`gh.${String(k)} called`); } });
+  return { gh, calls };
+};
+
+async function preflight(stageTools, extra = {}, tools = toolFixtures()) {
+  const { root, mainRoot, sh } = cloneWithOrigin();
+  writeFileSync(join(mainRoot, 'AGENTS.md'), '## Commands\n\n- test: `npm test`\n');
+  mkdirSync(join(mainRoot, '.agents', 'feature-flow'), { recursive: true });
+  writeFileSync(join(mainRoot, '.agents', 'feature-flow', 'feature-flow.json'), JSON.stringify({ worktreeRoot: join(root, 'wt'), stageTools, ...extra }));
+  const { gh, calls } = recordingGh();
+  const invoke = async () => { throw new Error('invoked'); };
+  const err = await runMod.runEpic(1, { cwd: mainRoot, print: () => {}, deps: { gh, invoke, tools } }).then(() => null, (e) => e);
+  return { err, calls, root, worktrees: sh(mainRoot, 'worktree', 'list').split('\n').length };
+}
+
+test('runEpic preflight throws naming stage and plugin before any gh call or worktree', async () => {
+  const { err, calls, root, worktrees } = await preflight({ implement: { plugins: ['no-such-plugin'] } });
+  assert.match(err?.message ?? '', /stage tools not found: .*implement: .*plugin no-such-plugin/);
+  assert.deepEqual(calls, []);
+  assert.equal(worktrees, 1);
+  assert.equal(existsSync(join(root, 'wt')), false);
+});
+
+test('runEpic preflight names every failing stage in one error', async () => {
+  const { err, calls } = await preflight({ implement: { plugins: ['no-such-a'] }, review: { plugins: ['no-such-b'] } });
+  assert.match(err?.message ?? '', /stage tools not found: .*implement: .*plugin no-such-a/);
+  assert.match(err.message, /review: .*plugin no-such-b/);
+  assert.deepEqual(calls, []);
+});
+
+test('runEpic preflight checks escalate only when escalationEnabled', async () => {
+  const off = await preflight({ escalate: { plugins: ['no-such-esc'] } }, { escalationEnabled: false });
+  assert.doesNotMatch(off.err?.message ?? '', /stage tools not found/);
+  assert.ok(off.calls.length > 0, 'preflight passed, so the run reached gh');
+  const on = await preflight({ escalate: { plugins: ['no-such-esc'] } }, { escalationEnabled: true });
+  assert.match(on.err?.message ?? '', /stage tools not found: .*escalate: .*plugin no-such-esc/);
+  assert.deepEqual(on.calls, []);
+});
+
+test('runEpic preflight surfaces a resolver error with the stage named', async () => {
+  const tools = { ...toolFixtures(), codexListings: async () => { throw new Error('codex plugin list failed: boom'); } };
+  const { err, calls } = await preflight({}, {}, tools);
+  assert.match(err?.message ?? '', /stage tools not found: .*review: .*boom/);
+  assert.deepEqual(calls, []);
+});
+
+test('resolveStageTools resolves nothing for plan', async () => {
+  const cfg = loadConfig(null);
+  cfg.stageTools.plan.plugins = ['no-such-plugin'];
+  assert.deepEqual((await toolkitMod.resolveStageTools(cfg, 'plan', toolFixtures())).missing, []);
+});
+
+const toolsRow = (rows, s) => rows.find((r) => r[0] === `tools ${s}`).slice(1);
+
+test('toolsChecks: ok detail, FAIL on missing, FAIL with the first line of a resolver error', async () => {
+  const cfg = loadConfig(null);
+  const ok = await toolkitMod.toolsChecks(cfg, async () => ({ tools: {}, args: [], missing: [] }));
+  assert.equal(ok.length, 4);
+  assert.deepEqual(toolsRow(ok, 'review'), ['ok', 'skills=mattpocock-skills:code-review; plugins=ponytail; mcp=none']);
+  const miss = await toolkitMod.toolsChecks(cfg, async (c, s) => ({ tools: {}, args: [], missing: s === 'implement' ? ['plugin x'] : [] }));
+  assert.deepEqual(toolsRow(miss, 'implement'), ['FAIL', 'not found: plugin x']);
+  const boom = await toolkitMod.toolsChecks(cfg, async () => { throw new Error('codex failed\nmore detail'); });
+  assert.deepEqual(toolsRow(boom, 'review'), ['FAIL', 'codex failed']);
+});
+
+test('toolsChecks never resolves plan; the ignored note shows only when mcp/plugins are listed', async () => {
+  const cfg = loadConfig(null);
+  const resolve = async (c, s) => { assert.notEqual(s, 'plan'); return { tools: {}, args: [], missing: [] }; };
+  assert.deepEqual(toolsRow(await toolkitMod.toolsChecks(cfg, resolve), 'plan'), ['ok', 'skills=grilling, to-tickets, writing-for-agents']);
+  cfg.stageTools.plan.plugins = ['no-such-plugin'];
+  const [status, detail] = toolsRow(await toolkitMod.toolsChecks(cfg, resolve), 'plan');
+  assert.equal(status, 'ok');
+  assert.ok(detail.endsWith('; mcp/plugins ignored (interactive)'), detail);
 });

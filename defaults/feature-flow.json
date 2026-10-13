@@ -13,25 +13,23 @@
   "allowNetwork": false,
   "style": { "internal": "none" },
   "toolkit": {
-    "claude": { "hooks": [], "plugins": ["ponytail", "mattpocock-skills"] },
+    "claude": { "hooks": [] },
     "codex": {
       "useUserConfig": true,
-      "disableMcp": true,
       "hooks": false,
       "windowsSandbox": "mxc",
       "disableFeatures": [],
-      "inject": ["ponytail"],
-      "disablePlugins": ["computer-use@openai-bundled", "unified-computer-use@openai-bundled", "browser@openai-bundled", "chrome@openai-bundled", "codex-app-tools@openai-bundled"]
+      "inject": ["ponytail"]
     }
   },
   "contextBudget": { "plan": 100000, "review": 100000, "escalate": 100000, "byModel": {} },
   "apiPrices": {
     "gpt-6.1-sol": { "input": 2.0, "cachedInput": 0.1, "cacheWrite": 2.5, "output": 10.0, "source": "https://developers.openai.com/api/docs/pricing" }
   },
-  "stageSkills": {
-    "plan": ["grilling", "to-tickets", "writing-for-agents"],
-    "implement": ["tdd"],
-    "review": ["code-review"],
-    "escalate": ["diagnosing-bugs", "tdd"]
+  "stageTools": {
+    "plan":      { "skills": ["grilling", "to-tickets", "writing-for-agents"], "mcp": [], "plugins": [] },
+    "implement": { "skills": ["mattpocock-skills:tdd"], "mcp": [], "plugins": ["ponytail"] },
+    "review":    { "skills": ["mattpocock-skills:code-review"], "mcp": [], "plugins": ["ponytail"] },
+    "escalate":  { "skills": ["mattpocock-skills:diagnosing-bugs", "mattpocock-skills:tdd"], "mcp": [], "plugins": ["ponytail"] }
   }
 }

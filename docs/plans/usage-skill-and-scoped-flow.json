@@ -1,0 +1,232 @@
+{
+  "title": "ff usage skill and a flow sized to the change",
+  "summary": "## Why\n\nNothing told agents when or how to use ff. One agent wrote its own 7-ticket plan in an over-budget session, published it through the library and approved it for the user: the grilling, the fresh planner session and the human approval gate were all skipped. And the full flow is overkill for one- or two-line fixes, so agents either over-process trivial changes or skip ff entirely.\n\n## Agreed behaviour\n\n**Three flow sizes.** The agent proposes one with reasons; the user confirms before work starts; when in doubt, the bigger size.\n- **trivial**: about 10 changed lines or fewer, in 1-2 files; fixes or adjusts existing behaviour; no new API, CLI flag, config key or data shape; nothing left open. The agent edits directly, adds a regression test and uses the repo's normal commit/PR process. ff is not involved.\n- **small**: one vertical slice one agent can finish in one sitting; the expected behaviour is clear; no design decisions left for the user; no migration. The agent writes one ticket JSON, then `ff ticket <file>` creates a standalone `ff:ticket` issue (no epic, no grilling). The user approves it and `ff run <ticket#>` runs the usual loop: red/green TDD, cross-model review, PR with QA steps, human QA and merge.\n- **feature**: everything else (several slices, open decisions, new API/schema/config, changes across the codebase, vague requests). The full flow in a fresh `ff plan` session.\n\n**Approval.** `ff approve <n>` approves a plan (epic) or a standalone ticket before implementation starts. It shows a Windows confirmation dialog listing what is approved and adds `plan-approved` only when the user clicks OK. Without a dialog it falls back to a `[y/N]` prompt in a real terminal, and otherwise refuses. The user can type `! ff approve <n>` in the session, or an agent can run it while the user clicks. Each approval made through `ff approve` is recorded as an `approved` event with how it was confirmed.\n\n**Planner bypass.** `ff publish` refuses outside an `ff plan` session (`FF_PLAN_ID` unset) unless `--unplanned` is passed. An unplanned epic carries a visible note, and `plan_published` records `planned` and `size`.\n\n**The skill.** `skills/feature-flow/SKILL.md` covers sizes, confirmation, commands per path and the non-negotiables: planning happens in a fresh `ff plan` session; agents never add `plan-approved` themselves (with `gh` or otherwise), merge, or edit or relabel ff issues; `ff approve` is run only so the user can confirm; `--unplanned` only when the user asks. Claude gets it through the plugin; for Codex, `ff doctor` prints the link command for `~/.agents/skills`. `ff init` adds a pointer section to each repo's AGENTS.md. The `plan-feature` skill starts a fresh `ff plan` session instead of planning in the current one.\n\n## Out of scope\n\n- Enforcing size limits in code; any ff tooling for the trivial path\n- Turning an existing GitHub issue into a ticket; running one ticket of an epic\n- An MCP approval tool; a separate bot GitHub identity for agents; blocking raw `gh issue edit --add-label plan-approved` (only the skill wording covers it)\n- GUI dialogs on macOS/Linux (terminal fallback only)\n- A by-size view in `ff stats`\n\n## Notes for implementers\n\nThe robustness epic (#1) is still open and touches the same files: #5 (publish validation, injectable gh in `publishPlan`) and #8 (strict per-command CLI options). Build on current main. If #8 has merged, register new commands and flags in its allowlists instead of `BOOLEAN_FLAGS`.",
+  "tickets": [
+    {
+      "key": "T1",
+      "title": "Small path: ff ticket publishes a standalone ticket",
+      "goal": "An agent can turn a small, well-understood change into one GitHub ticket with no epic: `ff ticket <ticket.json>` creates a standalone `ff:ticket` issue ready for approval.",
+      "inScope": [
+        "New command `ff ticket <file.json>` in bin/ff.mjs, listed in USAGE. The file holds ONE ticket object with the plan ticket fields: title, goal, inScope, outOfScope, dod, tests, qaHints. `key` and `dependsOn` are optional and ignored. Read the file BOM-tolerantly (strip a leading U+FEFF) like other JSON reads",
+        "Validation before any GitHub call: title and goal are non-empty strings, and dod and tests are non-empty arrays. Otherwise exit 1 with an error naming the field",
+        "A publish function in lib/publish.mjs (e.g. `publishTicket(ticket, { cwd, approve, gh })`) with the GitHub module injectable so unit tests use a fake (follow the pattern ticket #5 added to publishPlan if merged; otherwise default to the real module)",
+        "The issue: label `ff:ticket` (plus `plan-approved` only when cfg.planApproval is false), no parent, body = `ticketBody` without the `Part of #<epic>.` line (make `ticketBody(t, epic)` omit that line when epic is absent)",
+        "Works without FF_PLAN_ID",
+        "Append a `plan_published` event: { planId: FF_PLAN_ID or null, epic: <new issue#>, size: 'small', planned: Boolean(FF_PLAN_ID), ...planShape({ tickets: [ticket] }) }",
+        "Output: JSON `{ \"ticket\": n }`, then `Ticket #n awaits approval: ff approve n` (planApproval true) or `Ticket #n is approved: ff run n`"
+      ],
+      "outOfScope": [
+        "Running the ticket (T2)",
+        "Turning an existing GitHub issue into a ticket",
+        "A by-size view in ff stats; any size enforcement"
+      ],
+      "dod": [
+        "`ff ticket t.json` with a valid ticket creates exactly one issue labelled `ff:ticket` with no parent and prints its number",
+        "The issue body has the Goal, In scope, Out of scope, Definition of done, Tests to write first and QA hints sections and no `Part of #` line",
+        "A ticket with a missing title or goal, or an empty dod or tests array, exits 1 naming the field and creates no issue",
+        "With planApproval false the issue also has `plan-approved`; with planApproval true it does not",
+        "events.jsonl gets a `plan_published` event with `size: \"small\"` and the new issue number in `epic`",
+        "Running `ff` with no arguments lists `ff ticket <ticket.json>` in the usage text",
+        "`ticketBody(t, epic)` with an epic still renders `Part of #<epic>.` exactly as before",
+        "npm test passes and no test calls the real gh"
+      ],
+      "tests": [
+        "ticketBody(t) with no epic omits the `Part of #` line; ticketBody(t, 7) keeps `Part of #7.`",
+        "publishTicket rejects a missing title, a missing goal, an empty dod and an empty tests array, naming the field, and the fake gh records zero created issues",
+        "publishTicket with approve false creates one issue with labels ['ff:ticket'] and no parent; with approve true the labels are ['ff:ticket', 'plan-approved']"
+      ],
+      "qaHints": [
+        "In a sandbox repo, write a small ticket JSON and run `ff ticket` on it; open the issue: no parent epic, sections render, no `Part of` line",
+        "Try `\"dod\": []` and a ticket with no goal: clear error, nothing created on GitHub",
+        "Check `<git common dir>/feature-flow/events.jsonl` for the size \"small\" event"
+      ],
+      "dependsOn": []
+    },
+    {
+      "key": "T2",
+      "title": "ff run runs a standalone ticket",
+      "goal": "`ff run <n>` implements, reviews and hands off a standalone ticket exactly like a ticket in an epic, and refuses with a clear message any issue that isn't a feature-flow epic or standalone ticket.",
+      "inScope": [
+        "lib/github.mjs viewIssue also requests the `parent` field (`gh issue view --json parent` is verified to work with gh 2.94)",
+        "A pure function in lib/run.mjs (e.g. `runTargets(issue)`) that decides what to run: `ff:epic` -> its sub-issues (today's behaviour); `ff:ticket` with no parent -> [the issue itself]; `ff:ticket` with a parent -> throws `#n is part of epic #E; run \\`ff run E\\``; anything else -> throws `#n is not a feature-flow epic or ticket`",
+        "runEpic uses it. For a standalone ticket the planApproval check reads the ticket's own labels and the log message says `ticket #n lacks the plan-approved label; nothing run`",
+        "Readiness and the skipped-ticket report reuse gh.isReady and the existing code paths (a standalone ticket already labelled ready-for-qa is reported, not run again)",
+        "Log file `<n>.log`, `<n>.usage.json` and events with `epic: n` stay as they are, so `ff stats <n>` works for a standalone ticket",
+        "bin/ff.mjs USAGE: `ff run <epic#|ticket#>`"
+      ],
+      "outOfScope": [
+        "Running a single ticket that belongs to an epic",
+        "Creating tickets (T1)",
+        "Any change to the per-ticket loop (runTicket)",
+        "The exit code when nothing is approved or ready (robustness ticket #7)"
+      ],
+      "dod": [
+        "`ff run <n>` on an approved standalone `ff:ticket` runs that ticket through red, green and review and prints the results table with one row",
+        "`ff run <n>` on a standalone ticket without `plan-approved` (planApproval true) logs that the ticket lacks the label and runs nothing",
+        "`ff run <n>` on an `ff:ticket` with a parent epic exits non-zero with `part of epic #E; run \\`ff run E\\``",
+        "`ff run <n>` on an issue with neither label exits non-zero with `not a feature-flow epic or ticket`",
+        "`ff run <epic#>` behaves exactly as before",
+        "npm test passes and no test calls the real gh"
+      ],
+      "tests": [
+        "runTargets(epic issue with subIssues) returns the sub-issues",
+        "runTargets(ff:ticket issue with parent null) returns [that issue]",
+        "runTargets(ff:ticket issue with parent { number: 4 }) throws a message containing `ff run 4`",
+        "runTargets(issue with no ff label) throws `not a feature-flow epic or ticket`"
+      ],
+      "qaHints": [
+        "Create a standalone ticket (`ff ticket` once T1 is merged, or `gh issue create --label ff:ticket`), approve it, `ff run` it in a sandbox repo, check the PR and `ff stats <n>`",
+        "Run `ff run` on a child ticket of an epic and on an ordinary issue: clear refusals, nothing labelled in-progress",
+        "Run an existing epic to confirm nothing changed"
+      ],
+      "dependsOn": []
+    },
+    {
+      "key": "T3",
+      "title": "ff approve needs a human click or terminal confirmation",
+      "goal": "Only a person can approve a plan or ticket. `ff approve <n>` shows a Windows confirmation dialog listing what is being approved and adds `plan-approved` only when the user clicks OK. It works from `! ff approve` in a Claude or Codex session, or when an agent runs it, but the agent can't confirm.",
+      "inScope": [
+        "bin/ff.mjs approve: view the issue. For an epic, the confirmation text has its title and each sub-issue's `#n title`; for a standalone ticket, its title and goal. Text built by a pure function (e.g. `approvalText(issue, subIssues)`)",
+        "If the issue already has `plan-approved`: print `#n is already approved`, exit 0, show no dialog",
+        "New lib/approve.mjs `confirmApproval({ text, title, platform, isTTY, showDialog, prompt })` with injectable dialog and prompt. Windows: a topmost Windows Forms MessageBox (OK/Cancel) via `powershell.exe -NoProfile -NonInteractive`. The dialog text and title travel in environment variables (e.g. FF_APPROVE_TEXT) and are read as `$env:` inside a FIXED script: issue titles are untrusted and must never be interpolated into the command",
+        "If the dialog can't be shown (not Windows, or powershell fails or is killed) and stdin is a TTY: prompt `Approve #n \"<title>\"? [y/N]`. Otherwise refuse with exit 1: `ff approve needs you to confirm: run it on a Windows desktop or in a terminal`",
+        "Add the label only on OK or `y`. Cancel or `N` prints `not approved` and exits 1 with no label",
+        "On success append an `approved` event { issue: n, via: 'dialog' | 'terminal' } to events.jsonl",
+        "personas/planner.md, publish step: when planApproval is true, run `ff approve <epic#>` yourself so the user can review and click OK or Cancel in the dialog; never add the label any other way",
+        "README: describe the confirmation and the `! ff approve <n>` option"
+      ],
+      "outOfScope": [
+        "An MCP approval tool; a separate GitHub identity for agents",
+        "Blocking raw `gh issue edit --add-label plan-approved`",
+        "GUI dialogs on macOS or Linux (terminal fallback only)"
+      ],
+      "dod": [
+        "On Windows, `ff approve <n>` shows a dialog in front of other windows that names the issue and lists its tickets; OK adds `plan-approved`, Cancel adds nothing and exits 1",
+        "`! ff approve <n>` typed in a Claude Code session shows the same dialog and works the same",
+        "With the dialog unavailable and stdin not a TTY, `ff approve` exits 1 and adds no label",
+        "With the dialog unavailable and a TTY, the y/N prompt decides whether the label is added",
+        "An issue title containing quotes, `$(...)`, backticks or `;` is shown literally in the dialog and runs nothing",
+        "An already-approved issue prints `already approved` and shows no dialog",
+        "events.jsonl gets an `approved` event recording how it was confirmed",
+        "npm test passes; tests never open a real dialog or call the real gh"
+      ],
+      "tests": [
+        "approvalText for an epic contains the epic title and `#n title` for every sub-issue; for a standalone ticket it contains its title and goal",
+        "confirmApproval: dialog returns OK -> approved via 'dialog'; dialog returns Cancel -> not approved and prompt is never called; dialog unavailable + isTTY + answer 'y' -> approved via 'terminal'; dialog unavailable + isTTY + answer '' -> not approved; dialog unavailable + no TTY -> refused",
+        "The PowerShell argument list built for the dialog contains no issue text (the text is only in the env passed to the process)"
+      ],
+      "qaHints": [
+        "Run `ff approve <n>` from Windows Terminal, then via `! ff approve <n>` in Claude Code, then ask the agent to run it and click Cancel: no label",
+        "Rename a sandbox issue to `a\"; $(calc) ; 'b` and approve it: the title shows literally and nothing else starts",
+        "Check the dialog comes to the front even when the terminal isn't focused",
+        "In a Codex session the sandbox may block the dialog: it must refuse cleanly, never add the label"
+      ],
+      "dependsOn": []
+    },
+    {
+      "key": "T4",
+      "title": "ff publish requires a planning session",
+      "goal": "Epics can only be published from inside an `ff plan` session unless the user explicitly opts out with `--unplanned`, and unplanned epics are visibly marked.",
+      "inScope": [
+        "bin/ff.mjs publish: when FF_PLAN_ID is unset and `--unplanned` was not passed, exit 1 before any GitHub call with: `ff publish runs inside an ff plan session (start one with \\`ff plan\\`). Pass --unplanned only if the user asked to skip planning.` Use a pure guard (e.g. `publishGuard(env, opts)`) so it is unit-testable",
+        "`--unplanned` is a boolean flag (add it to BOOLEAN_FLAGS in lib/opts.mjs, or to ticket #8's per-command allowlist if that has merged), so `ff publish --unplanned p.json` and `ff publish p.json --unplanned` both work; publish reads the plan file from the first positional",
+        "An unplanned epic's body starts with `> Published without an ff plan session (ff publish --unplanned).` followed by a blank line (epicBody / publishPlan option)",
+        "`plan_published` gains `planned: true|false` and `size: 'feature'`",
+        "USAGE lists `ff publish [--unplanned] <plan.json>`"
+      ],
+      "outOfScope": [
+        "Blocking direct library calls to publishPlan (ff eval uses it)",
+        "Detecting a planning session by anything other than FF_PLAN_ID",
+        "ff ticket (T1)"
+      ],
+      "dod": [
+        "`ff publish plan.json` with FF_PLAN_ID unset exits 1, prints the message and creates no issues",
+        "With FF_PLAN_ID set it publishes as before, and the event has `planned: true` and `size: \"feature\"`",
+        "With `--unplanned` in either position it publishes; the epic body's first line is the note and the event has `planned: false`",
+        "`ff eval` still publishes its plan through the library",
+        "npm test passes and no test calls the real gh"
+      ],
+      "tests": [
+        "publishGuard({}, {}) refuses; publishGuard({ FF_PLAN_ID: 'x' }, {}) allows; publishGuard({}, { unplanned: true }) allows",
+        "parseOpts(['--unplanned', 'p.json']) gives unplanned true and keeps 'p.json' positional",
+        "epicBody(plan, { unplanned: true }) starts with the note line; epicBody(plan) is unchanged"
+      ],
+      "qaHints": [
+        "From an ordinary terminal, `ff publish` a sandbox plan: refused, nothing on GitHub",
+        "`ff publish --unplanned` it: the note is visible at the top of the epic",
+        "Publish from inside an `ff plan` session: works with no note"
+      ],
+      "dependsOn": []
+    },
+    {
+      "key": "T5",
+      "title": "One feature-flow skill tells agents which flow to use",
+      "goal": "Any Claude or Codex agent working in a repo that uses ff loads the `feature-flow` skill, proposes a flow size with reasons, waits for the user to confirm it, and then follows the right commands and the non-negotiables.",
+      "inScope": [
+        "Use the writing-for-agents skill when writing skill text",
+        "skills/feature-flow/SKILL.md, frontmatter `name: feature-flow`. The description triggers on code changes, bug fixes and features in a repo that has ff set up (AGENTS.md has a `## feature-flow` section or `.agents/feature-flow/` exists), and says it does NOT apply to agents started by ff to implement, review or escalate a ticket",
+        "Its body: (1) the three size criteria exactly as in the epic summary; (2) propose a size with reasons and wait for the user's confirmation, picking the bigger size when in doubt; (3) commands per path: trivial = edit, add a regression test, use the repo's normal commit/PR process; small = write the ticket JSON (fields and an example), `ff ticket <file>`, `ff approve <n>` for the user to confirm when planApproval is true, `ff run <n>`; feature = start a fresh planner as the plan-feature skill does; (4) what `ff run` results mean, pointing to the run skill; (5) non-negotiables: planning happens in a fresh `ff plan` session; never add `plan-approved` yourself (with gh or otherwise), merge, or edit or relabel ff issues; run `ff approve` only so the user can confirm; use `--unplanned` only when the user explicitly asks",
+        "skills/plan-feature/SKILL.md: stop telling the agent to follow the planner persona in the current session. If `ff config` shows plan.cli claude, run `ff plan --bg --name \"<short name>\" \"<request>\"` and tell the user to open it from Claude Code's agent view; otherwise ask the user to run `ff plan \"<request>\"`. Never plan in the current session",
+        "skills/run/SKILL.md: `ff run <epic# or ticket#>`, covering standalone tickets",
+        "README `Use` section: the three sizes, `ff ticket`, `ff approve`'s confirmation, and the skill"
+      ],
+      "outOfScope": [
+        "ff doctor and ff init changes (T6)",
+        "Enforcing sizes in code"
+      ],
+      "dod": [
+        "skills/feature-flow/SKILL.md exists with frontmatter `name: feature-flow` and a description that excludes agents running as ff stages",
+        "It states the three size criteria, the propose-and-confirm rule, the commands for each path and the non-negotiables",
+        "skills/plan-feature/SKILL.md starts a fresh `ff plan` session and no longer tells the agent to follow the planner persona itself",
+        "skills/run/SKILL.md covers standalone tickets",
+        "The README Use section documents the three sizes and `ff ticket`",
+        "npm test passes"
+      ],
+      "tests": [
+        "skills/feature-flow/SKILL.md has frontmatter name `feature-flow` and mentions `ff ticket`, `ff plan`, `ff approve`, `ff run`, `--unplanned` and `plan-approved`",
+        "skills/plan-feature/SKILL.md contains `ff plan` and does not contain `ff persona planner`"
+      ],
+      "qaHints": [
+        "In a fresh Claude session in a sandbox repo with ff set up: ask for a one-line fix (it should propose trivial and wait), a small change (small: writes ticket JSON, runs `ff ticket`), and a feature (starts `ff plan --bg`)",
+        "Ask the agent to approve its ticket: it runs `ff approve` so you get the dialog, and never adds the label itself",
+        "Repeat one scenario in Codex once the skill is linked (T6)"
+      ],
+      "dependsOn": ["T1", "T2", "T3", "T4"]
+    },
+    {
+      "key": "T6",
+      "title": "Codex and every ff repo can find the skill",
+      "goal": "npm installs ship the skills, `ff doctor` tells the user exactly how to make the feature-flow skill visible to Codex, and `ff init` points each repo's AGENTS.md at the skill.",
+      "inScope": [
+        "package.json `files` includes `skills`",
+        "ff doctor row `feature-flow skill`: ok when `~/.agents/skills/feature-flow` exists (link or directory); WARN otherwise (never FAIL) with the exact command from a pure function (e.g. `skillLinkHint(platform, pluginRoot, home)`): win32 `cmd /c mklink /J \"<home>\\.agents\\skills\\feature-flow\" \"<pluginRoot>\\skills\\feature-flow\"`, else `ln -s \"<pluginRoot>/skills/feature-flow\" \"<home>/.agents/skills/feature-flow\"`. ff never creates the link and never links into ~/.claude/skills (Claude gets the skill from the plugin)",
+        "ff init appends a `## feature-flow` section to AGENTS.md if missing (pure function, e.g. `withFfSection(md)`): `When the user asks for a code change, use the feature-flow skill to pick a flow size (trivial / small / feature) and confirm it with the user before starting. Never approve plans, add the plan-approved label, or merge for the user. If ff started you to implement, review or escalate a ticket, ignore this section.`",
+        "This repo's AGENTS.md gets the same section"
+      ],
+      "outOfScope": [
+        "Creating links automatically",
+        "Skill content (T5)",
+        "Claude plugin install changes"
+      ],
+      "dod": [
+        "`npm pack --dry-run` lists files under skills/",
+        "ff doctor shows ok when ~/.agents/skills/feature-flow exists and WARN with the platform's link command when it doesn't; this check never makes doctor exit 1",
+        "ff init adds the section once; running it again doesn't duplicate it",
+        "parseCommands still finds the `## Commands` entries after the section is added",
+        "This repo's AGENTS.md contains the section",
+        "npm test passes"
+      ],
+      "tests": [
+        "skillLinkHint('win32', 'C:\\\\pkg', 'C:\\\\Users\\\\u') returns the `mklink /J` command with both paths; skillLinkHint('linux', '/pkg', '/home/u') returns the `ln -s` command",
+        "withFfSection(md) appends the section; withFfSection(withFfSection(md)) equals withFfSection(md)",
+        "parseCommands(withFfSection(md with ## Commands)) returns the same commands as parseCommands(md)"
+      ],
+      "qaHints": [
+        "Run `ff doctor`, run the printed command, run `ff doctor` again: WARN becomes ok (after T5 is merged the link target has content)",
+        "Run `ff init` twice in a sandbox repo and check AGENTS.md",
+        "Open Codex and check the feature-flow skill is listed"
+      ],
+      "dependsOn": []
+    }
+  ]
+}

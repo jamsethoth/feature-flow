@@ -8,6 +8,7 @@ import * as runMod from '../lib/run.mjs';
 import { codexUsage, recordedSandbox, apiCost, lastQuotaPct, invoke } from '../lib/adapters.mjs';
 import { styleBlock } from '../lib/stages.mjs';
 import { withPrefixedTwins, claudeToolkit, findClaudePlugin, codexToolkit, codexListings, claudeTrusted, grantClaudeTrust } from '../lib/toolkit.mjs';
+import * as toolkitMod from '../lib/toolkit.mjs';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, readdirSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { commitAll, discardChanges, ensureWorktree } from '../lib/git.mjs';
@@ -733,4 +734,92 @@ test('red gate: nonzero exit without the reported test names is rejected', () =>
 
 test('red gate: nonzero exit naming a reported failing test is accepted', () => {
   assert.deepEqual(checkRed({ code: 1, output: 'not ok 1 - rejects bad input' }, ['rejects bad input']), { ok: true });
+});
+
+// Stage-tools preflight. Fixture Claude home has ponytail installed; the fake Codex listing has it too.
+function toolFixtures() {
+  const home = mkdtempSync(join(tmpdir(), 'ff-home-'));
+  const pony = join(home, 'pony');
+  mkdirSync(join(home, 'plugins'), { recursive: true });
+  mkdirSync(pony);
+  writeFileSync(join(home, 'plugins', 'installed_plugins.json'), JSON.stringify({ plugins: { 'ponytail@mkt': [{ installPath: pony }] } }));
+  return { home, cwd: home, codexListings: async () => ({ plugins: ['ponytail@mkt'], mcp: [] }) };
+}
+
+// Every gh method records its call and throws, so a run that gets past the preflight stops at its first gh call.
+const recordingGh = () => {
+  const calls = [];
+  const gh = new Proxy({}, { get: (_, k) => async () => { calls.push(k); throw new Error(`gh.${String(k)} called`); } });
+  return { gh, calls };
+};
+
+async function preflight(stageTools, extra = {}, tools = toolFixtures()) {
+  const { root, mainRoot, sh } = cloneWithOrigin();
+  writeFileSync(join(mainRoot, 'AGENTS.md'), '## Commands\n\n- test: `npm test`\n');
+  mkdirSync(join(mainRoot, '.agents', 'feature-flow'), { recursive: true });
+  writeFileSync(join(mainRoot, '.agents', 'feature-flow', 'feature-flow.json'), JSON.stringify({ worktreeRoot: join(root, 'wt'), stageTools, ...extra }));
+  const { gh, calls } = recordingGh();
+  const invoke = async () => { throw new Error('invoked'); };
+  const err = await runMod.runEpic(1, { cwd: mainRoot, print: () => {}, deps: { gh, invoke, tools } }).then(() => null, (e) => e);
+  return { err, calls, root, worktrees: sh(mainRoot, 'worktree', 'list').split('\n').length };
+}
+
+test('runEpic preflight throws naming stage and plugin before any gh call or worktree', async () => {
+  const { err, calls, root, worktrees } = await preflight({ implement: { plugins: ['no-such-plugin'] } });
+  assert.match(err?.message ?? '', /stage tools not found: .*implement: .*plugin no-such-plugin/);
+  assert.deepEqual(calls, []);
+  assert.equal(worktrees, 1);
+  assert.equal(existsSync(join(root, 'wt')), false);
+});
+
+test('runEpic preflight names every failing stage in one error', async () => {
+  const { err, calls } = await preflight({ implement: { plugins: ['no-such-a'] }, review: { plugins: ['no-such-b'] } });
+  assert.match(err?.message ?? '', /stage tools not found: .*implement: .*plugin no-such-a/);
+  assert.match(err.message, /review: .*plugin no-such-b/);
+  assert.deepEqual(calls, []);
+});
+
+test('runEpic preflight checks escalate only when escalationEnabled', async () => {
+  const off = await preflight({ escalate: { plugins: ['no-such-esc'] } }, { escalationEnabled: false });
+  assert.doesNotMatch(off.err?.message ?? '', /stage tools not found/);
+  assert.ok(off.calls.length > 0, 'preflight passed, so the run reached gh');
+  const on = await preflight({ escalate: { plugins: ['no-such-esc'] } }, { escalationEnabled: true });
+  assert.match(on.err?.message ?? '', /stage tools not found: .*escalate: .*plugin no-such-esc/);
+  assert.deepEqual(on.calls, []);
+});
+
+test('runEpic preflight surfaces a resolver error with the stage named', async () => {
+  const tools = { ...toolFixtures(), codexListings: async () => { throw new Error('codex plugin list failed: boom'); } };
+  const { err, calls } = await preflight({}, {}, tools);
+  assert.match(err?.message ?? '', /stage tools not found: .*review: .*boom/);
+  assert.deepEqual(calls, []);
+});
+
+test('resolveStageTools resolves nothing for plan', async () => {
+  const cfg = loadConfig(null);
+  cfg.stageTools.plan.plugins = ['no-such-plugin'];
+  assert.deepEqual((await toolkitMod.resolveStageTools(cfg, 'plan', toolFixtures())).missing, []);
+});
+
+const toolsRow = (rows, s) => rows.find((r) => r[0] === `tools ${s}`).slice(1);
+
+test('toolsChecks: ok detail, FAIL on missing, FAIL with the first line of a resolver error', async () => {
+  const cfg = loadConfig(null);
+  const ok = await toolkitMod.toolsChecks(cfg, async () => ({ tools: {}, args: [], missing: [] }));
+  assert.equal(ok.length, 4);
+  assert.deepEqual(toolsRow(ok, 'review'), ['ok', 'skills=mattpocock-skills:code-review; plugins=ponytail; mcp=none']);
+  const miss = await toolkitMod.toolsChecks(cfg, async (c, s) => ({ tools: {}, args: [], missing: s === 'implement' ? ['plugin x'] : [] }));
+  assert.deepEqual(toolsRow(miss, 'implement'), ['FAIL', 'not found: plugin x']);
+  const boom = await toolkitMod.toolsChecks(cfg, async () => { throw new Error('codex failed\nmore detail'); });
+  assert.deepEqual(toolsRow(boom, 'review'), ['FAIL', 'codex failed']);
+});
+
+test('toolsChecks never resolves plan; the ignored note shows only when mcp/plugins are listed', async () => {
+  const cfg = loadConfig(null);
+  const resolve = async (c, s) => { assert.notEqual(s, 'plan'); return { tools: {}, args: [], missing: [] }; };
+  assert.deepEqual(toolsRow(await toolkitMod.toolsChecks(cfg, resolve), 'plan'), ['ok', 'skills=grilling, to-tickets, writing-for-agents']);
+  cfg.stageTools.plan.plugins = ['no-such-plugin'];
+  const [status, detail] = toolsRow(await toolkitMod.toolsChecks(cfg, resolve), 'plan');
+  assert.equal(status, 'ok');
+  assert.ok(detail.endsWith('; mcp/plugins ignored (interactive)'), detail);
 });

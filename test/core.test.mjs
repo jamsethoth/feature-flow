@@ -319,6 +319,14 @@ test('codexListings runs each command at most once per process', async () => {
   assert.deepEqual(calls, { 'plugin list': 1, 'mcp list': 1 });
 });
 
+test('codexListings does not rerun a failed listing', async () => {
+  const calls = {};
+  const runner = listRunner('not json', [], calls);
+  await assert.rejects(codexListings({ runner }), /codex plugin list --json/);
+  await assert.rejects(codexListings({ runner }), /codex plugin list --json/);
+  assert.deepEqual(calls, { 'plugin list': 1, 'mcp list': 1 });
+});
+
 test('codexToolkit enables listed plugins and disables every other installed one', () => {
   const listing = codexListing(['ponytail@ponytail', 'github@openai-curated']);
   const { args, missing } = codexToolkit({}, { plugins: ['ponytail'] }, listing);

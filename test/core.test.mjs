@@ -354,6 +354,8 @@ test('codexToolkit disables every listed MCP server whatever the stage mcp list 
   const { args } = codexToolkit({}, { mcp: ['playwright'], plugins: [] }, codexListing([], ['playwright', 'node_repl', 'my server']));
   assert.ok(args.includes('mcp_servers={"playwright"={enabled=false},"node_repl"={enabled=false},"my server"={enabled=false}}'), args.join(' '));
   assert.ok(!args.some((a) => a.startsWith('mcp_servers.')), args.join(' '));
+  // TOML forbids a raw DEL in strings; JSON.stringify leaves it as is.
+  assert.ok(codexToolkit({}, {}, codexListing([], ['x\u007fy'])).args.includes('mcp_servers={"x\\u007fy"={enabled=false}}'));
   // Nothing installed: no empty tables.
   assert.deepEqual(codexToolkit({}, {}, codexListing([])).args, ['-c', 'features.remote_plugin=false']);
 });

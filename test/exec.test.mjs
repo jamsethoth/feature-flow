@@ -117,6 +117,10 @@ test('runShell with a timeout leaves background processes of a command that fini
   assert.ok(await waitFor(() => existsSync(pidFile), 3000), 'background process never started');
   const pid = Number(readFileSync(pidFile, 'utf8'));
   try {
+    if (process.platform === 'win32') { // reported, not killed
+      assert.ok(res.leftovers?.includes(pid), JSON.stringify(res.leftovers));
+      assert.match(res.output, /left running: pid/);
+    }
     await new Promise((r) => setTimeout(r, 500));
     assert.ok(alive(pid), 'background process was killed');
   } finally {

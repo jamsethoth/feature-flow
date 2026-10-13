@@ -75,7 +75,7 @@ public static class FFJob {
     while (!kill && WaitForSingleObject(pi.hp, 50) != 0) { }
     if (!kill) {
       // finished on its own: like a plain spawn, leave any background leftovers running
-      if (jobOk) { var keep = new EXT(); SetInformationJobObject(job, 9, ref keep, Marshal.SizeOf(typeof(EXT))); }
+      if (jobOk) { var left0 = Members(job); if (left0.Count > 0) Note("leftover " + string.Join(",", left0)); var keep = new EXT(); SetInformationJobObject(job, 9, ref keep, Marshal.SizeOf(typeof(EXT))); }
       uint code; GetExitCodeProcess(pi.hp, out code); return (int)code;
     }
 

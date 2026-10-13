@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { run, runShell } from '../lib/exec.mjs';
+import { run, runShell, killTree } from '../lib/exec.mjs';
 
 const dir = mkdtempSync(join(tmpdir(), 'ff-exec-'));
 const script = (name, src) => { const p = join(dir, name).replace(/\\/g, '/'); writeFileSync(p, src); return p; };
@@ -34,14 +34,14 @@ test('run: multi-byte character split across chunks is read back exactly', async
 });
 
 test('runShell: multi-byte character split across chunks is read back exactly', async () => {
-  const res = await runShell(`node ${splitWriter}`);
+  const res = await runShell(`node "${splitWriter}"`);
   assert.equal(res.output, '€\n');
 });
 
 test('runShell: a command waiting for stdin EOF returns promptly', async () => {
   const waiter = script('wait-stdin.mjs', `process.stdin.resume(); process.stdin.on('end', () => console.log('eof'));`);
   const t0 = Date.now();
-  const res = await runShell(`node ${waiter}`, { timeoutMs: 20000 });
+  const res = await runShell(`node "${waiter}"`, { timeoutMs: 20000 });
   assert.ok(Date.now() - t0 < 5000, 'should not wait for the timeout');
   assert.equal(res.code, 0);
   assert.ok(!res.timedOut);
@@ -60,7 +60,7 @@ spawn(process.execPath, [${JSON.stringify(grandchild)}], { stdio: 'ignore' });
 setTimeout(() => {}, 60000);
 `);
   const t0 = Date.now();
-  const res = await runShell(`node ${parent}`, { timeoutMs: 1000 });
+  const res = await runShell(`node "${parent}"`, { timeoutMs: 1000 });
   assert.ok(Date.now() - t0 < 3000, 'should return within ~2s of the timeout');
   assert.equal(res.timedOut, true);
   await sleep(300);
@@ -69,6 +69,10 @@ setTimeout(() => {}, 60000);
   const stillAlive = alive(pid);
   if (stillAlive) process.kill(pid); // don't leak it when the assertion fails
   assert.ok(!stillAlive, 'grandchild should be killed with the tree');
+});
+
+test('killTree: reports a failed termination instead of swallowing it', () => {
+  assert.ok(killTree(2 ** 22 + 12345), 'a missing process should yield an error message');
 });
 
 test('run: failure message keeps the child stderr even with a several-KB argument list', async () => {

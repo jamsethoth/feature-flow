@@ -23,6 +23,7 @@ public static class FFJob {
   [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)] static extern bool CreateProcess(string app, string cmd, IntPtr pa, IntPtr ta, bool inherit, uint flags, IntPtr env, string cwd, ref SI si, out PI pi);
   [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)] static extern IntPtr CreateFile(string f, uint access, uint share, ref SA sa, uint disp, uint attrs, IntPtr t);
   [DllImport("kernel32.dll")] static extern IntPtr GetStdHandle(int h);
+  [DllImport("kernel32.dll", SetLastError = true)] static extern bool SetHandleInformation(IntPtr h, uint mask, uint flags);
   [DllImport("kernel32.dll", SetLastError = true)] static extern uint ResumeThread(IntPtr t);
   [DllImport("kernel32.dll", SetLastError = true)] static extern bool TerminateProcess(IntPtr p, uint code);
   [DllImport("kernel32.dll")] static extern uint WaitForSingleObject(IntPtr h, uint ms);
@@ -52,6 +53,8 @@ public static class FFJob {
     bool jobOk = job != IntPtr.Zero && SetInformationJobObject(job, 9, ref ext, Marshal.SizeOf(typeof(EXT)));
     if (!jobOk) Note("nojob " + Marshal.GetLastWin32Error());
 
+    // the control pipe must not leak into the command or its descendants, or ff would never see EOF/close
+    SetHandleInformation(GetStdHandle(-10), 1, 0);
     var sa = new SA(); sa.n = Marshal.SizeOf(typeof(SA)); sa.inherit = 1;
     IntPtr nul = CreateFile("NUL", 0x80000000, 3, ref sa, 3, 0, IntPtr.Zero);
     var si = new SI(); si.cb = Marshal.SizeOf(typeof(SI)); si.flags = 0x100; // USESTDHANDLES: stdin is NUL, not our control pipe
@@ -70,7 +73,11 @@ public static class FFJob {
     var reader = new Thread(() => { try { Console.OpenStandardInput().ReadByte(); } catch { } kill = true; }) { IsBackground = true };
     reader.Start();
     while (!kill && WaitForSingleObject(pi.hp, 50) != 0) { }
-    if (!kill) { uint code; GetExitCodeProcess(pi.hp, out code); return (int)code; }
+    if (!kill) {
+      // finished on its own: like a plain spawn, leave any background leftovers running
+      if (jobOk) { var keep = new EXT(); SetInformationJobObject(job, 9, ref keep, Marshal.SizeOf(typeof(EXT))); }
+      uint code; GetExitCodeProcess(pi.hp, out code); return (int)code;
+    }
 
     if (!deny) { if (jobOk) TerminateJobObject(job, 1); else TerminateProcess(pi.hp, 1); }
     var left = new List<int>();

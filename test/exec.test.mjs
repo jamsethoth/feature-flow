@@ -109,6 +109,21 @@ test('runShell with a failed process snapshot reports known descendants as unver
   }
 });
 
+test('runShell with a timeout leaves background processes of a command that finished on its own running', async () => {
+  const { pidFile, cmd } = orphanScripts('leftover');
+  const quit = script('leftover-quit.mjs', `import { spawn } from 'node:child_process'; spawn(process.execPath, [${JSON.stringify(join(tmp, 'leftover-gc.mjs'))}], { detached: true, stdio: 'ignore' }).unref();`);
+  const res = await runShell(`"${process.execPath}" "${quit}"`, { timeoutMs: 20000 });
+  assert.equal(res.code, 0);
+  assert.ok(await waitFor(() => existsSync(pidFile), 3000), 'background process never started');
+  const pid = Number(readFileSync(pidFile, 'utf8'));
+  try {
+    await new Promise((r) => setTimeout(r, 500));
+    assert.ok(alive(pid), 'background process was killed');
+  } finally {
+    try { process.kill(pid); } catch {}
+  }
+});
+
 test('runShell timeout leaves an unrelated orphan alone', async () => {
   const pidFile = join(tmp, 'unrelated.pid');
   const sleeper = script('unrelated-sleeper.mjs', `import { writeFileSync } from 'node:fs'; writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setTimeout(() => {}, 60000);`);

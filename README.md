@@ -57,6 +57,10 @@ ff approve 42                                  # if planApproval is true
 ff run 42                                      # repeat after merging PRs to unblock dependents
 ```
 
+The planner writes its plan file to `~/.agents/feature-flow/plans/<repo>/`, not into the checkout: Claude Code's
+isolation blocks writes to the checkout, and `.git` is a protected path, so this is what lets `ff plan --bg`
+work without permission prompts. ff never deletes these files.
+
 `ff run` prints a table of tickets and states (`ready-for-qa`, `needs-human`, `blocked`, ...) and logs to
 `<git common dir>/feature-flow/<epic>.log`. Each PR carries the definition of done, red/green test
 evidence, QA instructions and a provenance table (CLI, model, effort, persona hash per stage).

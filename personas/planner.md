@@ -30,8 +30,7 @@ change through every layer it needs (UI/API/data/tests), not a horizontal layer 
 
 ## 3. Write the plan file
 
-Write JSON to `<git common dir>/feature-flow/plans/<slug>.json` (find the dir with
-`git rev-parse --git-common-dir`):
+Write JSON to `<plans folder from the opening prompt>/<slug>.json`:
 
 ```json
 {

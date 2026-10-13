@@ -13,7 +13,7 @@ import { runEval } from '../lib/eval.mjs';
 import { writePlanMarker, readPlanMarker, clearPlanMarker, claudePlanMetrics, codexPlanMetrics, planShape } from '../lib/planmetrics.mjs';
 import { randomUUID } from 'node:crypto';
 import { parseOpts } from '../lib/opts.mjs';
-import { publishPlan } from '../lib/publish.mjs';
+import { publishPlan, readPlanFile } from '../lib/publish.mjs';
 import * as gh from '../lib/github.mjs';
 
 const USAGE = `feature-flow (ff)
@@ -177,7 +177,7 @@ async function publish(file) {
   const info = await repoInfo(process.cwd());
   const root = info.mainRoot;
   const cfg = loadConfig(root);
-  const planJson = JSON.parse(readFileSync(file, 'utf8'));
+  const planJson = readPlanFile(file);
   const res = await publishPlan(planJson, { cwd: root, approve: !cfg.planApproval });
   const dir = join(info.gitCommonDir, 'feature-flow');
   // FF_PLAN_ID is set by `ff plan` for its own session, so concurrent planners don't share the marker.

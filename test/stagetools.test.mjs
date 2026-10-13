@@ -124,6 +124,13 @@ test('stageTools: Codex disables every configured MCP server whatever the stage 
   assert.equal(args.some((a) => a.includes('enabled=true')), false);
 });
 
+test('stageTools: Codex headers with trailing comments are still disabled', () => {
+  const codexHome = codexHomeWith('[plugins."extra@market"] # note\nenabled=true\n[mcp_servers.serena] # note\n');
+  const { args } = stageTools(codexCfg([]), 'review', { codexHome });
+  assert.ok(args.includes('plugins."extra@market".enabled=false'));
+  assert.ok(args.includes('mcp_servers.serena.enabled=false'));
+});
+
 test('runEpic stops before any worktree when a stage plugin is missing, naming stage and plugin', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'ff-epic-'));
   const g = (...a) => execFileSync('git', a, { cwd: dir, encoding: 'utf8' });

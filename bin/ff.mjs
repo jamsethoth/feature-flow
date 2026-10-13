@@ -5,10 +5,10 @@ import { loadConfig, loadPersona, loadCommands, loadSkillText, budgetFor, STAGES
 import { run } from '../lib/exec.mjs';
 import { interactiveArgs } from '../lib/adapters.mjs';
 import { repoInfo } from '../lib/git.mjs';
-import { runEpic, codexDesktopLock, codexSandboxRaces, CODEX_LOCK_WARNING } from '../lib/run.mjs';
+import { runEpic, runExitCode, codexDesktopLock, codexSandboxRaces, CODEX_LOCK_WARNING } from '../lib/run.mjs';
 import { claudeToolkit, codexToolkit, codexMcpServers, skillsBlock, claudeTrusted, grantClaudeTrust, TRUST_HINT } from '../lib/toolkit.mjs';
 import { eventLog, readEvents } from '../lib/events.mjs';
-import { summarize, renderSummary, refreshOutcomes } from '../lib/stats.mjs';
+import { summarize, renderSummary, refreshOutcomes, refreshSummary } from '../lib/stats.mjs';
 import { runEval } from '../lib/eval.mjs';
 import { writePlanMarker, readPlanMarker, clearPlanMarker, claudePlanMetrics, codexPlanMetrics, planShape } from '../lib/planmetrics.mjs';
 import { randomUUID } from 'node:crypto';
@@ -27,7 +27,9 @@ const USAGE = `feature-flow (ff)
                               record a background planning session's metrics
   ff publish <plan.json>  create the epic + ticket issues from a planner's plan file
   ff approve <epic#>      add the plan-approved label
-  ff run <epic#>          implement, review and hand off all ready tickets
+  ff run <epic#> [--retry-stuck N[,N...]]
+                          implement, review and hand off all ready tickets; --retry-stuck resets
+                          the named in-progress tickets (closes PR, deletes branch/worktree) and re-runs them
   ff stats [epic] [--label L] [--by-label] [--refresh] [--json]
                           efficacy/efficiency metrics from the event log; --refresh asks GitHub for PR outcomes
   ff eval --plan <plan.json> --runs N --reset "<cmd>" <variant.json>...
@@ -38,6 +40,7 @@ const USAGE = `feature-flow (ff)
 const SPECS = {
   init: { bools: ['trust'] },
   plan: { bools: ['bg'], values: ['name', 'session'], optional: ['finish'] },
+  run: { bools: [], values: ['retry-stuck'] },
   stats: { bools: ['refresh', 'by-label', 'json'], values: ['label'] },
   eval: { bools: [], values: ['plan', 'runs', 'reset'] },
 };
@@ -194,11 +197,13 @@ async function publish(file) {
   return 0;
 }
 
-async function runCmd(epic) {
-  const results = await runEpic(positiveInt(epic, 'epic number'));
+async function runCmd(args) {
+  const o = parseOpts(args, SPECS.run);
+  const retryStuck = o['retry-stuck'] ? o['retry-stuck'].split(',').map((n) => positiveInt(n, 'ticket number')) : [];
+  const results = await runEpic(positiveInt(o._[0], 'epic number'), { retryStuck });
   console.log('\nticket  state          pr');
   for (const r of results) console.log(`#${String(r.ticket).padEnd(6)} ${r.state.padEnd(14)} ${r.pr ?? r.error ?? ''}`);
-  return results.some((r) => r.state === 'needs-human') ? 2 : 0;
+  return runExitCode(results);
 }
 
 async function stats(args) {
@@ -207,8 +212,7 @@ async function stats(args) {
   const dir = join(info.gitCommonDir, 'feature-flow');
   let events = readEvents(dir);
   if (o.refresh) {
-    const n = await refreshOutcomes(events, info.mainRoot, eventLog(dir));
-    console.log(`refreshed ${n} PR outcome(s)`);
+    console.log(refreshSummary(await refreshOutcomes(events, info.mainRoot, eventLog(dir))));
     events = readEvents(dir);
   }
   const epic = o._[0] ? positiveInt(o._[0], 'epic number') : undefined;
@@ -231,7 +235,7 @@ const [cmd, ...rest] = process.argv.slice(2);
 // Positional-only commands: reject stray flags, honour `--`.
 const positional = () => parseOpts(rest, { bools: [], values: [] })._;
 const commands = {
-  doctor: () => (positional(), doctor()), init: () => init(rest), plan: () => plan(rest), publish: () => publish(positional()[0]), run: () => runCmd(positional()[0]),
+  doctor: () => (positional(), doctor()), init: () => init(rest), plan: () => plan(rest), publish: () => publish(positional()[0]), run: () => runCmd(rest),
   stats: () => stats(rest), eval: () => evalCmd(rest),
   approve: async () => { await gh.editLabels(positiveInt(positional()[0], 'epic number'), { add: ['plan-approved'] }, await repoRoot()); return 0; },
   config: async () => { positional(); console.log(JSON.stringify(loadConfig(await repoRoot().catch(() => null)), null, 2)); return 0; },

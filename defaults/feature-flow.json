@@ -6,6 +6,7 @@
   "planApproval": true,
   "escalationEnabled": false,
   "maxParallel": 2,
+  "stuckAfterHours": 6,
   "maxReviewRounds": 2,
   "baseBranch": "main",
   "worktreeRoot": "~/worktrees",

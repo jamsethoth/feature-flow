@@ -61,7 +61,9 @@ public static class FFJob {
     si.hin = nul; si.hout = GetStdHandle(-11); si.herr = GetStdHandle(-12);
     PI pi;
     // SUSPENDED so the process cannot spawn anything before it is in the job; BREAKAWAY is not requested.
-    if (!CreateProcess(null, cmdline, IntPtr.Zero, IntPtr.Zero, true, 0x4 | 0x08000000, IntPtr.Zero, cwd, ref si, out pi)) {
+    // No CREATE_NO_WINDOW: it would start a conhost.exe inside the job that outlives the command and reads as a leftover;
+    // the command shares this helper's hidden console instead.
+    if (!CreateProcess(null, cmdline, IntPtr.Zero, IntPtr.Zero, true, 0x4, IntPtr.Zero, cwd, ref si, out pi)) {
       Note("fail " + Marshal.GetLastWin32Error());
       return 127;
     }

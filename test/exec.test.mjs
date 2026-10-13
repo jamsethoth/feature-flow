@@ -53,6 +53,7 @@ test('runShell with a timeout still returns the exit code and output of a comman
   assert.match(res.output, /hi/);
   assert.ok(!res.timedOut);
   assert.ok(!/FFJOB/.test(res.output));
+  assert.equal(res.leftovers, undefined, 'a clean command must not report leftovers (e.g. its console host)');
 });
 
 test('runShell: a command outliving timeoutMs returns within budget, flagged as timed out', async () => {

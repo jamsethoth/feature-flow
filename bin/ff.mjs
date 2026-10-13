@@ -246,4 +246,4 @@ if (!Object.hasOwn(commands, cmd) || (['publish', 'run', 'approve', 'persona'].i
   console.log(USAGE);
   process.exit(cmd ? 1 : 0);
 }
-commands[cmd]().then((code) => process.exit(code), (err) => { console.error(err.message); if (err.usage) console.error(USAGE); process.exit(1); });
+Promise.resolve().then(() => commands[cmd]()).then((code) => process.exit(code), (err) => { console.error(err.message); if (err.usage) console.error(USAGE); process.exit(1); });

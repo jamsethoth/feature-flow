@@ -15,6 +15,7 @@ import { diffStats, severityCounts } from '../lib/events.mjs';
 import { summarize, renderSummary } from '../lib/stats.mjs';
 import { planShape, claudeTranscriptMetrics, codexTranscriptMetrics, lastRequestContext } from '../lib/planmetrics.mjs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 
 test('mergeConfig merges stage objects key by key, later layers win', () => {
@@ -304,7 +305,7 @@ test('parseOpts: inherited property names are not flags', () => {
 
 const ff = (...args) => {
   try {
-    return { code: 0, out: execFileSync(process.execPath, [join(import.meta.dirname, '..', 'bin', 'ff.mjs'), ...args], { encoding: 'utf8', stdio: 'pipe' }), err: '' };
+    return { code: 0, out: execFileSync(process.execPath, [fileURLToPath(new URL('../bin/ff.mjs', import.meta.url)), ...args], { encoding: 'utf8', stdio: 'pipe' }), err: '' };
   } catch (e) { return { code: e.status, out: String(e.stdout), err: String(e.stderr) }; }
 };
 
@@ -335,6 +336,16 @@ test('ff: argument errors print the error and usage', () => {
     const r = ff(...args);
     assert.equal(r.code, 1, args.join(' '));
     assert.match(r.err, /feature-flow \(ff\)/, args.join(' '));
+  }
+});
+
+test('ff: unknown options on every command print error and usage, no stack trace', () => {
+  for (const cmd of ['doctor', 'publish', 'run', 'config']) {
+    const r = ff(cmd, '--bogus', '1');
+    assert.equal(r.code, 1, cmd);
+    assert.match(r.err, /unknown option --bogus/, cmd);
+    assert.match(r.err, /feature-flow \(ff\)/, cmd);
+    assert.doesNotMatch(r.err, /\n\s+at /, cmd);
   }
 });
 

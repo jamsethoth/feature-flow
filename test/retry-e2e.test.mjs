@@ -8,19 +8,25 @@ import * as realGh from '../lib/github.mjs';
 import * as git from '../lib/git.mjs';
 import * as run from '../lib/run.mjs';
 
-test('runEpic --retry-stuck resets only the named ticket and restarts it at red from the base branch', async () => {
+// A disposable origin + clone with the minimal config and AGENTS.md that runEpic needs.
+function epicRepo() {
   const root = mkdtempSync(join(tmpdir(), 'ff-e2e-'));
+  const sh = (cwd, ...args) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd, encoding: 'utf8' }).trim();
+  sh(root, 'init', '--bare', '-b', 'main', 'origin.git');
+  sh(root, 'clone', 'origin.git', 'repo');
+  const main = join(root, 'repo');
+  mkdirSync(join(main, '.agents', 'feature-flow'), { recursive: true });
+  writeFileSync(join(main, '.agents', 'feature-flow', 'feature-flow.json'), JSON.stringify({ planApproval: false, worktreeRoot: join(root, 'wts') }));
+  writeFileSync(join(main, 'AGENTS.md'), '## Commands\n\n- test: `node -e 0`\n');
+  sh(main, 'add', '-A');
+  sh(main, 'commit', '-m', 'init');
+  sh(main, 'push', 'origin', 'HEAD:main');
+  return { root, sh, main };
+}
+
+test('runEpic --retry-stuck resets only the named ticket and restarts it at red from the base branch', async () => {
+  const { root, sh, main } = epicRepo();
   try {
-    const sh = (cwd, ...args) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd, encoding: 'utf8' }).trim();
-    sh(root, 'init', '--bare', '-b', 'main', 'origin.git');
-    sh(root, 'clone', 'origin.git', 'repo');
-    const main = join(root, 'repo');
-    mkdirSync(join(main, '.agents', 'feature-flow'), { recursive: true });
-    writeFileSync(join(main, '.agents', 'feature-flow', 'feature-flow.json'), JSON.stringify({ planApproval: false, worktreeRoot: join(root, 'wts') }));
-    writeFileSync(join(main, 'AGENTS.md'), '## Commands\n\n- test: `node -e 0`\n');
-    sh(main, 'add', '-A');
-    sh(main, 'commit', '-m', 'init');
-    sh(main, 'push', 'origin', 'HEAD:main');
     const base = sh(main, 'rev-parse', 'HEAD');
 
     // A stopped run's leftover attempt for #7: worktree, extra commit, pushed branch.
@@ -64,18 +70,8 @@ test('runEpic --retry-stuck resets only the named ticket and restarts it at red 
 });
 
 test('runEpic surfaces a failed label update with the ticket number in the log and events, and the run exits non-zero', async () => {
-  const root = mkdtempSync(join(tmpdir(), 'ff-e2e-'));
+  const { root, sh, main } = epicRepo();
   try {
-    const sh = (cwd, ...args) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd, encoding: 'utf8' }).trim();
-    sh(root, 'init', '--bare', '-b', 'main', 'origin.git');
-    sh(root, 'clone', 'origin.git', 'repo');
-    const main = join(root, 'repo');
-    mkdirSync(join(main, '.agents', 'feature-flow'), { recursive: true });
-    writeFileSync(join(main, '.agents', 'feature-flow', 'feature-flow.json'), JSON.stringify({ planApproval: false, worktreeRoot: join(root, 'wts') }));
-    writeFileSync(join(main, 'AGENTS.md'), '## Commands\n\n- test: `node -e 0`\n');
-    sh(main, 'add', '-A');
-    sh(main, 'commit', '-m', 'init');
-    sh(main, 'push', 'origin', 'HEAD:main');
 
     const issue = (n) => ({ number: n, title: `Ticket ${n}`, state: 'OPEN', labels: [], blockedBy: [], subIssues: n === 1 ? [{ number: 9 }] : [] });
     const gh = {
@@ -95,6 +91,23 @@ test('runEpic surfaces a failed label update with the ticket number in the log a
     assert.ok(events.some((e) => e.type === 'label_failed' && e.ticket === 9 && e.error.includes('HTTP 502')), 'event names the ticket and the error');
     assert.equal(results.find((r) => r.ticket === 9).labelFailed, true);
     assert.equal(run.runExitCode(results), 1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a crashed ticket keeps the reason from the later lines of the error in the result and the ticket_end event', async () => {
+  const { root, main } = epicRepo();
+  try {
+    const issue = (n) => ({ number: n, title: `Ticket ${n}`, state: 'OPEN', labels: [], blockedBy: [], subIssues: n === 1 ? [{ number: 9 }] : [] });
+    const gh = { ...realGh, viewIssue: async (n) => issue(n), findPr: async () => undefined, editLabels: async () => '', commentIssue: async () => {} };
+    const invoke = async () => { throw new Error("git push origin x exited 1\nremote: Permission to o/r denied to u"); };
+
+    const results = await run.runEpic(1, { cwd: main, print() {}, deps: { gh, invoke } });
+
+    assert.match(results.find((r) => r.ticket === 9).error, /Permission to o\/r denied/);
+    const events = readFileSync(join(main, '.git', 'feature-flow', 'events.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+    assert.match(events.find((e) => e.type === 'ticket_end' && e.ticket === 9).error, /Permission to o\/r denied/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

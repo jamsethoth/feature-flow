@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -58,6 +58,43 @@ test('runEpic --retry-stuck resets only the named ticket and restarts it at red 
     assert.ok(labels[8].includes('in-progress') && !calls.some((c) => c[1] === 8));
     assert.deepEqual(results.map((r) => r.ticket).sort(), [7, 8, 9]);
     assert.equal(run.runExitCode(results), 2);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('runEpic surfaces a failed label update with the ticket number in the log and events, and the run exits non-zero', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'ff-e2e-'));
+  try {
+    const sh = (cwd, ...args) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd, encoding: 'utf8' }).trim();
+    sh(root, 'init', '--bare', '-b', 'main', 'origin.git');
+    sh(root, 'clone', 'origin.git', 'repo');
+    const main = join(root, 'repo');
+    mkdirSync(join(main, '.agents', 'feature-flow'), { recursive: true });
+    writeFileSync(join(main, '.agents', 'feature-flow', 'feature-flow.json'), JSON.stringify({ planApproval: false, worktreeRoot: join(root, 'wts') }));
+    writeFileSync(join(main, 'AGENTS.md'), '## Commands\n\n- test: `node -e 0`\n');
+    sh(main, 'add', '-A');
+    sh(main, 'commit', '-m', 'init');
+    sh(main, 'push', 'origin', 'HEAD:main');
+
+    const issue = (n) => ({ number: n, title: `Ticket ${n}`, state: 'OPEN', labels: [], blockedBy: [], subIssues: n === 1 ? [{ number: 9 }] : [] });
+    const gh = {
+      ...realGh,
+      viewIssue: async (n) => issue(n),
+      findPr: async () => undefined,
+      editLabels: async () => { throw new Error('HTTP 502'); },
+      commentIssue: async () => {},
+    };
+    const invoke = async () => ({ out: { status: 'blocked', notes: 'stop after red' }, usage: { input: 0, cached: 0, output: 0 }, session: 's' });
+    const logs = [];
+
+    const results = await run.runEpic(1, { cwd: main, print: (l) => logs.push(l), deps: { gh, invoke } });
+
+    assert.ok(logs.some((l) => l.includes('#9') && l.includes('HTTP 502')), 'log names the ticket and the error');
+    const events = readFileSync(join(main, '.git', 'feature-flow', 'events.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+    assert.ok(events.some((e) => e.type === 'label_failed' && e.ticket === 9 && e.error.includes('HTTP 502')), 'event names the ticket and the error');
+    assert.equal(results.find((r) => r.ticket === 9).labelFailed, true);
+    assert.equal(run.runExitCode(results), 1);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

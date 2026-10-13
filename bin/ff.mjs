@@ -21,7 +21,8 @@ const USAGE = `feature-flow (ff)
   ff init [--trust]       set up the current repo (labels, overrides dir, AGENTS.md commands);
                           --trust also accepts Claude Code workspace trust for it (needed by ff plan --bg)
   ff plan [feature...]    start the planner interactively (plan.cli/model/effort/persona)
-  ff plan --bg [feature...]   start it as a Claude Code background session (open via agent view)
+  ff plan --bg [--name N] [feature...]
+                              start it as a Claude Code background session (open via agent view)
   ff plan --finish [planId] [--session <claude session id>]
                               record a background planning session's metrics
   ff publish <plan.json>  create the epic + ticket issues from a planner's plan file
@@ -154,7 +155,8 @@ async function plan(args) {
     if (cfg.plan.cli !== 'claude') throw new Error('--bg needs plan.cli = claude (Claude Code background sessions)');
     if (claudeTrusted(root) === false) { clearPlanMarker(dir); throw new Error(TRUST_HINT(root)); }
     // A background Claude session: open it from Claude Code's agent view (left arrow on an empty prompt).
-    const r = await run(cmd, ['--bg', '--name', `ff plan: ${info.name}`, ...cliArgs], { cwd: root, allowFail: true, env: { FF_PLAN_ID: planId } });
+    const sessionName = typeof o.name === 'string' ? o.name : `ff plan: ${info.name}`;
+    const r = await run(cmd, ['--bg', '--name', sessionName, ...cliArgs], { cwd: root, allowFail: true, env: { FF_PLAN_ID: planId } });
     if (r.code !== 0) { clearPlanMarker(dir); throw new Error(`claude --bg failed:\n${r.stderr || r.stdout}`); }
     // Background sessions get their own id (--session-id is not honoured with --bg), so record the real one.
     const shortId = /claude (?:stop|attach|logs) ([0-9a-f]{6,})/.exec(r.stdout ?? '')?.[1] ?? null;
@@ -162,7 +164,7 @@ async function plan(args) {
     writePlanMarker(dir, { planId, started, background: true, sessionId });
     ev('plan_started', { planId, sessionId, cli: cfg.plan.cli, model: cfg.plan.model, effort: cfg.plan.effort, background: true });
     console.log(JSON.stringify({ planId, sessionId, shortId }));
-    console.log(`Planner running in the background as "ff plan: ${info.name}". Open it from Claude Code's agent view; when done: ff plan --finish ${planId}`);
+    console.log(`Planner running in the background as "${sessionName}". Open it from Claude Code's agent view; when done: ff plan --finish ${planId}`);
     return 0;
   }
 

@@ -7,7 +7,7 @@ import { stageForRound, pool } from '../lib/run.mjs';
 import { codexUsage, recordedSandbox, apiCost, lastQuotaPct } from '../lib/adapters.mjs';
 import { styleBlock } from '../lib/stages.mjs';
 import { withPrefixedTwins, claudeToolkit, findClaudePlugin, codexMcpServers, codexPlugins, codexToolkit, claudeTrusted, grantClaudeTrust } from '../lib/toolkit.mjs';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { commitAll, discardChanges } from '../lib/git.mjs';
 import { parseOpts } from '../lib/opts.mjs';
@@ -297,17 +297,41 @@ test('a failed label update is logged and recorded as an event with the ticket n
   assert.equal(events[0].ticket, 7);
 });
 
-test('in-progress tickets with no live run lock are reported as stuck', async () => {
+test('in-progress tickets are reported as stuck once the epic lock is ours', async () => {
   const { stuckTickets } = await import('../lib/run.mjs');
-  const dir = mkdtempSync(join(tmpdir(), 'ff-lock-'));
   const tickets = [
     { number: 1, state: 'OPEN', labels: [{ name: 'in-progress' }] },
     { number: 2, state: 'OPEN', labels: [{ name: 'ready-for-qa' }] },
   ];
-  assert.deepEqual(stuckTickets(tickets, { logDir: dir, epic: 5, alive: () => true }).map((t) => t.number), [1], 'no lock file: stuck');
-  writeFileSync(join(dir, '5.lock'), JSON.stringify({ pid: 4242 }));
-  assert.deepEqual(stuckTickets(tickets, { logDir: dir, epic: 5, alive: (pid) => pid === 4242 }), [], 'live pid: not stuck');
-  assert.deepEqual(stuckTickets(tickets, { logDir: dir, epic: 5, alive: () => false }).map((t) => t.number), [1], 'dead pid: stuck');
+  assert.deepEqual(stuckTickets(tickets).map((t) => t.number), [1]);
+});
+
+test('acquireLock does not delete a live lock another run installed while reclaiming a stale one', async () => {
+  const { acquireLock } = await import('../lib/run.mjs');
+  const dir = mkdtempSync(join(tmpdir(), 'ff-race-'));
+  writeFileSync(join(dir, '5.lock'), JSON.stringify({ pid: 1 }));
+  let raced = false;
+  const alive = (pid) => {
+    if (!raced) { raced = true; acquireLock(dir, 5, (p) => p !== 1); }
+    return pid !== 1;
+  };
+  assert.throws(() => acquireLock(dir, 5, alive), /another ff run/);
+  assert.equal(JSON.parse(readFileSync(join(dir, '5.lock'), 'utf8')).pid, process.pid);
+});
+
+test('runEpic fetches tickets only after holding the epic lock', async () => {
+  const { runEpic } = await import('../lib/run.mjs');
+  const dir = mkdtempSync(join(tmpdir(), 'ff-order-'));
+  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: dir });
+  writeFileSync(join(dir, 'AGENTS.md'), '# x\n\n## Commands\n\n- test: `npm test`\n');
+  let lockedAtFetch = null;
+  const deps = { gh: { viewIssue: async (n) => {
+    if (n === 5) return { number: 5, state: 'OPEN', labels: [{ name: 'plan-approved' }], subIssues: [{ number: 1 }] };
+    lockedAtFetch = existsSync(join(dir, '.git', 'feature-flow', '5.lock'));
+    return { number: 1, state: 'CLOSED', labels: [], blockedBy: [] };
+  } } };
+  await runEpic(5, { cwd: dir, print: () => {}, deps });
+  assert.equal(lockedAtFetch, true);
 });
 
 test('an epic with no sub-issues, or nothing ready, explains why and exits non-zero', async () => {

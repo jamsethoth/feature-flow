@@ -40,7 +40,7 @@ test('publishPlan rejects a missing or empty tickets array before creating anyth
 });
 
 test('a failure on the third issue reports the epic and the created ticket numbers', async () => {
-  const gh = fakeGh(3);
+  const gh = fakeGh(4); // epic + two tickets created, third ticket fails
   await assert.rejects(
     publish.publishPlan({ title: 'E', tickets: [tk('a'), tk('b'), tk('c')] }, { cwd: '.', approve: true, gh }),
     (err) => /gh exploded/.test(err.message) && /101/.test(err.message) && /102/.test(err.message) && /103/.test(err.message),

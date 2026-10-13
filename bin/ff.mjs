@@ -5,7 +5,7 @@ import { loadConfig, loadPersona, loadCommands, loadSkillText, budgetFor, STAGES
 import { run } from '../lib/exec.mjs';
 import { interactiveArgs } from '../lib/adapters.mjs';
 import { repoInfo } from '../lib/git.mjs';
-import { runEpic, codexDesktopLock, codexSandboxRaces, CODEX_LOCK_WARNING } from '../lib/run.mjs';
+import { runEpic, exitCodeFor, codexDesktopLock, codexSandboxRaces, CODEX_LOCK_WARNING } from '../lib/run.mjs';
 import { claudeToolkit, codexToolkit, codexMcpServers, skillsBlock, claudeTrusted, grantClaudeTrust, TRUST_HINT } from '../lib/toolkit.mjs';
 import { eventLog, readEvents } from '../lib/events.mjs';
 import { summarize, renderSummary, refreshOutcomes } from '../lib/stats.mjs';
@@ -27,7 +27,7 @@ const USAGE = `feature-flow (ff)
                               record a background planning session's metrics
   ff publish <plan.json>  create the epic + ticket issues from a planner's plan file
   ff approve <epic#>      add the plan-approved label
-  ff run <epic#>          implement, review and hand off all ready tickets
+  ff run <epic#> [--retry-stuck]  implement, review and hand off all ready tickets; --retry-stuck clears in-progress from dead runs
   ff stats [epic] [--label L] [--by-label] [--refresh] [--json]
                           efficacy/efficiency metrics from the event log; --refresh asks GitHub for PR outcomes
   ff eval --plan <plan.json> --runs N --reset "<cmd>" <variant.json>...
@@ -187,11 +187,11 @@ async function publish(file) {
   return 0;
 }
 
-async function runCmd(epic) {
-  const results = await runEpic(Number(epic));
+async function runCmd(epic, args) {
+  const results = await runEpic(Number(epic), { retryStuck: !!parseOpts(args)['retry-stuck'] });
   console.log('\nticket  state          pr');
   for (const r of results) console.log(`#${String(r.ticket).padEnd(6)} ${r.state.padEnd(14)} ${r.pr ?? r.error ?? ''}`);
-  return results.some((r) => r.state === 'needs-human') ? 2 : 0;
+  return exitCodeFor(results);
 }
 
 async function stats(args) {
@@ -200,8 +200,8 @@ async function stats(args) {
   const dir = join(info.gitCommonDir, 'feature-flow');
   let events = readEvents(dir);
   if (o.refresh) {
-    const n = await refreshOutcomes(events, info.mainRoot, eventLog(dir));
-    console.log(`refreshed ${n} PR outcome(s)`);
+    const { refreshed, failed } = await refreshOutcomes(events, info.mainRoot, eventLog(dir));
+    console.log(`refreshed ${refreshed} PR outcome(s)${failed ? `; ${failed} PR(s) could not be refreshed` : ''}`);
     events = readEvents(dir);
   }
   const epic = o._[0] ? Number(o._[0]) : undefined;
@@ -222,7 +222,7 @@ async function evalCmd(args) {
 
 const [cmd, ...rest] = process.argv.slice(2);
 const commands = {
-  doctor, init: () => init(rest), plan: () => plan(rest), publish: () => publish(rest[0]), run: () => runCmd(rest[0]),
+  doctor, init: () => init(rest), plan: () => plan(rest), publish: () => publish(rest[0]), run: () => runCmd(rest[0], rest.slice(1)),
   stats: () => stats(rest), eval: () => evalCmd(rest),
   approve: async () => { await gh.editLabels(rest[0], { add: ['plan-approved'] }, await repoRoot()); return 0; },
   config: async () => { console.log(JSON.stringify(loadConfig(await repoRoot().catch(() => null)), null, 2)); return 0; },

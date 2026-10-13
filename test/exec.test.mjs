@@ -129,6 +129,37 @@ test('runShell with a timeout leaves background processes of a command that fini
   }
 });
 
+test('runShell: a child that asks to break away from the job still starts, and is left outside the timeout kill', { skip: process.platform !== 'win32' && 'Windows job objects only' }, async () => {
+  const sleeper = script('ba-sleeper.mjs', 'setTimeout(() => {}, 60000);');
+  const ps = script('breakaway.ps1', `Add-Type -TypeDefinition @'
+using System; using System.Runtime.InteropServices;
+public static class BA {
+  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] struct SI { public int cb; public string r, desk, title; public int x, y, xs, ys, xc, yc, fill, flags; public short show, r2; public IntPtr r2p, hin, hout, herr; }
+  [StructLayout(LayoutKind.Sequential)] struct PI { public IntPtr hp, ht; public int pid, tid; }
+  [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)] static extern bool CreateProcess(string app, string cmd, IntPtr pa, IntPtr ta, bool inherit, uint flags, IntPtr env, string cwd, ref SI si, out PI pi);
+  public static string Run(string cmd) {
+    var si = new SI(); si.cb = Marshal.SizeOf(typeof(SI)); PI pi;
+    bool ok = CreateProcess(null, cmd, IntPtr.Zero, IntPtr.Zero, false, 0x01000000, IntPtr.Zero, null, ref si, out pi); // CREATE_BREAKAWAY_FROM_JOB
+    return ok ? "created pid=" + pi.pid : "failed win32error=" + Marshal.GetLastWin32Error();
+  }
+}
+'@
+[BA]::Run('"${process.execPath}" "${sleeper}"')
+Start-Sleep 60
+`);
+  const res = await runShell(`powershell.exe -NoProfile -NonInteractive -File "${ps}"`, { timeoutMs: 6000 });
+  const m = res.output.match(/created pid=(\d+)/);
+  const pid = m && Number(m[1]);
+  try {
+    assert.ok(m, `breakaway request was refused: ${res.output}`);
+    assert.equal(res.timedOut, true);
+    assert.ok(alive(pid), 'a child that broke away on purpose should be outside the job');
+    assert.ok(!res.survivors.some((s) => s.pid === pid), 'an escaped child is not a survivor of the job');
+  } finally {
+    if (pid) try { process.kill(pid); } catch {}
+  }
+});
+
 test('runShell timeout leaves an unrelated orphan alone', async () => {
   const pidFile = join(tmp, 'unrelated.pid');
   const sleeper = script('unrelated-sleeper.mjs', `import { writeFileSync } from 'node:fs'; writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setTimeout(() => {}, 60000);`);

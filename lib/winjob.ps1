@@ -49,7 +49,10 @@ public static class FFJob {
   public static int Run(string cmdline, string cwd, bool deny) {
     IntPtr job = CreateJobObject(IntPtr.Zero, null);
     var ext = new EXT();
-    if (!deny) ext.basic.flags = 0x2000; // KILL_ON_JOB_CLOSE
+    // KILL_ON_JOB_CLOSE, plus BREAKAWAY_OK: without it a tool that asks for CREATE_BREAKAWAY_FROM_JOB fails to start its
+    // child (error 5) where it would have worked before. Children that ask to break away are deliberately outside the job.
+    if (!deny) ext.basic.flags = 0x2000 | 0x800;
+    else ext.basic.flags = 0x800;
     bool jobOk = job != IntPtr.Zero && SetInformationJobObject(job, 9, ref ext, Marshal.SizeOf(typeof(EXT)));
     if (!jobOk) Note("nojob " + Marshal.GetLastWin32Error());
 

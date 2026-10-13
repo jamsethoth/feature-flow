@@ -298,6 +298,14 @@ test('codexListings reads plugin ids and MCP server names through the runner', a
   assert.deepEqual(await codexListings({ runner }), { plugins: ['ponytail@ponytail', 'github@openai-curated'], mcp: ['playwright'] });
 });
 
+test('codexListings lists local plugins only and only config.toml MCP servers', async () => {
+  const seen = [];
+  const lister = listRunner({ installed: [] }, []);
+  await codexListings({ runner: async (cmd, args) => { seen.push(args.join(' ')); return lister(cmd, args); } });
+  // Remote plugins ignore -c enabled flags, and plugin-provided MCP servers can't be disabled via mcp_servers.<name>.
+  assert.deepEqual(seen.sort(), ['mcp list --json -c features.plugins=false', 'plugin list --json -c features.remote_plugin=false']);
+});
+
 test('codexListings throws naming the command, never returning empty lists', async () => {
   const good = { installed: [{ pluginId: 'a@b' }] };
   const failing = async (cmd, args) => { if (args[0] === 'mcp') throw new Error('exit 1'); return { stdout: JSON.stringify(good) }; };
@@ -330,19 +338,24 @@ test('codexListings does not rerun a failed listing', async () => {
 test('codexToolkit enables listed plugins and disables every other installed one', () => {
   const listing = codexListing(['ponytail@ponytail', 'github@openai-curated']);
   const { args, missing } = codexToolkit({}, { plugins: ['ponytail'] }, listing);
-  assert.ok(args.includes('plugins."ponytail@ponytail".enabled=true'));
-  assert.ok(args.includes('plugins."github@openai-curated".enabled=false'));
+  // Codex splits -c keys on every '.' and keeps quotes literally, so ids go inside one inline-table value.
+  const table = '-c plugins={"ponytail@ponytail"={enabled=true},"github@openai-curated"={enabled=false}}';
+  assert.ok(args.join(' ').includes(table), args.join(' '));
+  assert.ok(!args.some((a) => a.startsWith('plugins.')), args.join(' '));
+  assert.deepEqual(args.slice(0, 2), ['-c', 'features.remote_plugin=false']);
   assert.deepEqual(missing, []);
-  assert.ok(codexToolkit({}, { plugins: ['ponytail@ponytail'] }, listing).args.includes('plugins."ponytail@ponytail".enabled=true'));
+  assert.ok(codexToolkit({}, { plugins: ['ponytail@ponytail'] }, listing).args.join(' ').includes(table));
+  assert.ok(codexToolkit({}, {}, codexListing(['a.b@m'])).args.includes('plugins={"a.b@m"={enabled=false}}'));
   assert.deepEqual(codexToolkit({}, { plugins: ['ponytail@other'] }, listing).missing, ['plugin ponytail@other']);
   assert.deepEqual(codexToolkit({}, { plugins: ['x'] }, codexListing(['x@a', 'x@b'])).missing, ['plugin x ambiguous: x@a, x@b']);
 });
 
 test('codexToolkit disables every listed MCP server whatever the stage mcp list says', () => {
   const { args } = codexToolkit({}, { mcp: ['playwright'], plugins: [] }, codexListing([], ['playwright', 'node_repl', 'my server']));
-  assert.ok(args.includes('mcp_servers.playwright.enabled=false'));
-  assert.ok(args.includes('mcp_servers.node_repl.enabled=false'));
-  assert.ok(args.includes('mcp_servers."my server".enabled=false'));
+  assert.ok(args.includes('mcp_servers={"playwright"={enabled=false},"node_repl"={enabled=false},"my server"={enabled=false}}'), args.join(' '));
+  assert.ok(!args.some((a) => a.startsWith('mcp_servers.')), args.join(' '));
+  // Nothing installed: no empty tables.
+  assert.deepEqual(codexToolkit({}, {}, codexListing([])).args, ['-c', 'features.remote_plugin=false']);
 });
 
 test('codexToolkit passes the Windows sandbox mode and hook switch', () => {
@@ -353,7 +366,7 @@ test('codexToolkit passes the Windows sandbox mode and hook switch', () => {
 
 test('codexToolkit with useUserConfig false reports listed plugins missing', () => {
   assert.deepEqual(codexToolkit({ useUserConfig: false }, { plugins: ['ponytail'] }),
-    { args: ['--ignore-user-config'], preamble: '', missing: ['plugin ponytail (useUserConfig is false)'] });
+    { args: ['--ignore-user-config', '-c', 'features.remote_plugin=false'], preamble: '', missing: ['plugin ponytail (useUserConfig is false)'] });
 });
 
 const codexInvoke = (toolkit, plugins, runner) => invoke({ stage: { cli: 'codex', persona: 'reviewer', model: 'x', effort: 'low' }, stageName: 'review',

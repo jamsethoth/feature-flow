@@ -75,7 +75,7 @@ async function doctor() {
   if (clis.has('claude') && cfg) await check('claude toolkit', async () => {
     const tk = claudeToolkit(cfg.toolkit?.claude);
     if (tk.missing.length) throw new Error(`not found: ${tk.missing.join(', ')}`);
-    return [...(cfg.toolkit?.claude?.hooks ?? []), ...(cfg.toolkit?.claude?.plugins ?? [])].join(', ') || 'none';
+    return `hooks: ${(cfg.toolkit?.claude?.hooks ?? []).join(', ') || 'none'}`;
   });
   if (clis.has('codex') && cfg?.toolkit?.codex?.disableMcp) checks.push(['codex MCP off', 'ok', codexMcpServers().join(', ') || 'none configured']);
   if (clis.has('codex') && cfg) await check('codex toolkit', async () => {
@@ -157,7 +157,7 @@ async function plan(args) {
   const started = Date.now();
   // The marker lets `ff publish`, run from inside the session, tag the epic with this planId.
   writePlanMarker(dir, { planId, started, background: Boolean(o.bg) });
-  const opening = `Start the feature-flow planning procedure for the repo at ${root}. planApproval is ${cfg.planApproval}.\nFeature request: ${o._.join(' ') || '(ask me for it)'}${skillsBlock(cfg.stageSkills?.plan)}`;
+  const opening = `Start the feature-flow planning procedure for the repo at ${root}. planApproval is ${cfg.planApproval}.\nFeature request: ${o._.join(' ') || '(ask me for it)'}${skillsBlock(cfg.stageTools?.plan?.skills)}`;
   const budget = budgetFor(cfg, 'plan', cfg.plan.model) ?? Infinity;
   const [cmd, cliArgs] = interactiveArgs(cfg.plan, persona, opening, cfg.plan.cli === 'claude' ? planId : undefined, Number.isFinite(budget) ? budget : undefined);
 

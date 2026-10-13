@@ -234,13 +234,11 @@ test('shipped defaults carry stageTools and drop the old Claude keys', () => {
   assert.deepEqual(cfg.toolkit.claude.hooks, []);
 });
 
-test('stageCallTools and configSummary carry stageTools; stage_call logs tools', () => {
+test('stageCallTools and configSummary carry stageTools', () => {
   const cfg = loadConfig(null);
   assert.deepEqual(runMod.stageCallTools(cfg, 'review'), { skills: ['mattpocock-skills:code-review'], mcp: [], plugins: ['ponytail'] });
   assert.deepEqual(runMod.stageCallTools({}, 'review'), { skills: [], mcp: [], plugins: [] });
   assert.deepEqual(runMod.configSummary(cfg).stageTools, cfg.stageTools);
-  const src = readFileSync(join(ROOT, 'lib', 'run.mjs'), 'utf8');
-  assert.match(src, /ev\('stage_call', \{[^}]*\btools\b/);
 });
 
 test('no lib/, bin/ or README reference to the old keys outside the replaced-key table', () => {
@@ -265,6 +263,17 @@ test('findClaudePlugin resolves installed and nested synced plugins', () => {
   assert.equal(findClaudePlugin('alpha', home), inst);
   assert.equal(findClaudePlugin('beta', home), join(home, 'plugins', 'synced', 'acct', 'uuid'));
   assert.equal(findClaudePlugin('gamma', home), null);
+});
+
+test('findClaudePlugin (Codex mode fallback) still takes the first of duplicate installs', () => {
+  const home = mkdtempSync(join(tmpdir(), 'ff-home-'));
+  const a = join(home, 'cache', 'a');
+  const b = join(home, 'cache', 'b');
+  mkdirSync(a, { recursive: true });
+  mkdirSync(b, { recursive: true });
+  mkdirSync(join(home, 'plugins'), { recursive: true });
+  writeFileSync(join(home, 'plugins', 'installed_plugins.json'), JSON.stringify({ plugins: { 'ponytail@a': [{ installPath: a }], 'ponytail@b': [{ installPath: b }] } }));
+  assert.equal(findClaudePlugin('ponytail', home), a);
 });
 
 test('codexMcpServers lists top-level server tables only', () => {

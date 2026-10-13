@@ -114,6 +114,26 @@ test('a crashed ticket keeps the reason from the later lines of the error in the
   }
 });
 
+test('invoke and the stage_call event carry the stage tools', async () => {
+  const { root, main } = epicRepo();
+  try {
+    const issue = (n) => ({ number: n, title: `Ticket ${n}`, state: 'OPEN', labels: [], blockedBy: [], subIssues: n === 1 ? [{ number: 9 }] : [] });
+    const gh = { ...realGh, viewIssue: async (n) => issue(n), findPr: async () => undefined, editLabels: async () => '', commentIssue: async () => {} };
+    const seen = [];
+    const invoke = async ({ stageName, tools }) => {
+      seen.push({ stageName, tools });
+      return { out: { status: 'blocked', notes: 'stop' }, usage: { input: 0, cached: 0, output: 0 }, session: 's' };
+    };
+    await run.runEpic(1, { cwd: main, print() {}, deps: { gh, invoke } });
+    const want = { skills: ['mattpocock-skills:tdd'], mcp: [], plugins: ['ponytail'] };
+    assert.deepEqual(seen[0], { stageName: 'implement', tools: want });
+    const events = readFileSync(join(main, '.git', 'feature-flow', 'events.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+    assert.deepEqual(events.find((e) => e.type === 'stage_call' && e.stage === 'implement').tools, want);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // Drives a ticket through the red gate only: the agent "writes" a test file and reports names, green never passes.
 async function redRun(testCommand, tests) {
   const { root, sh, main } = epicRepo(testCommand);

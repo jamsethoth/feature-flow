@@ -30,6 +30,25 @@ public static class FFJob {
   [DllImport("kernel32.dll")] static extern uint WaitForSingleObject(IntPtr h, uint ms);
   [DllImport("kernel32.dll")] static extern bool GetExitCodeProcess(IntPtr p, out uint code);
   [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
+  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] struct PE { public uint size, usage, pid; public UIntPtr heap; public uint module, threads, ppid; public int prio; public uint flags; [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)] public string exe; }
+  [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr CreateToolhelp32Snapshot(uint flags, uint pid);
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] static extern bool Process32FirstW(IntPtr s, ref PE e);
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] static extern bool Process32NextW(IntPtr s, ref PE e);
+
+  // PIDs still linked to root through parent ids, from a native snapshot (no WMI, which restricted sandboxes deny); null on failure.
+  static List<int> Linked(int root, out int err) {
+    err = 0;
+    IntPtr snap = CreateToolhelp32Snapshot(0x2, 0);
+    if (snap == new IntPtr(-1)) { err = Marshal.GetLastWin32Error(); return null; }
+    var rows = new List<int[]>();
+    var e = new PE(); e.size = (uint)Marshal.SizeOf(typeof(PE));
+    for (bool ok = Process32FirstW(snap, ref e); ok; ok = Process32NextW(snap, ref e)) rows.Add(new int[] { (int)e.pid, (int)e.ppid });
+    CloseHandle(snap);
+    var found = new HashSet<int> { root };
+    for (bool grew = true; grew;) { grew = false; foreach (var r in rows) if (!found.Contains(r[0]) && found.Contains(r[1])) { found.Add(r[0]); grew = true; } }
+    found.Remove(root);
+    return new List<int>(found);
+  }
 
   static void Note(string s) { Console.Error.Write("\n\u0001FFJOB " + s + "\n"); Console.Error.Flush(); }
 
@@ -98,7 +117,9 @@ public static class FFJob {
     }
 
     if (!deny) {
-      // without a job leave the root alive: ff's taskkill /T needs its pid to find the children it still links to
+      // without a job leave the root alive: ff's taskkill /T needs its pid to find the children it still links to,
+      // and list those children now, while the links exist, so they can be named if the kill is refused
+      if (!jobOk) { int le; var kids = Linked(pi.pid, out le); Note(kids == null ? "linkedfail " + le : "linked " + string.Join(",", kids)); }
       if (jobOk && !TerminateJobObject(job, 1)) Note("termfail " + Marshal.GetLastWin32Error());
     }
     var left = new List<int>();

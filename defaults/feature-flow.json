@@ -16,12 +16,10 @@
     "claude": { "hooks": [] },
     "codex": {
       "useUserConfig": true,
-      "disableMcp": true,
       "hooks": false,
       "windowsSandbox": "mxc",
       "disableFeatures": [],
-      "inject": ["ponytail"],
-      "disablePlugins": ["computer-use@openai-bundled", "unified-computer-use@openai-bundled", "browser@openai-bundled", "chrome@openai-bundled", "codex-app-tools@openai-bundled"]
+      "inject": ["ponytail"]
     }
   },
   "contextBudget": { "plan": 100000, "review": 100000, "escalate": 100000, "byModel": {} },

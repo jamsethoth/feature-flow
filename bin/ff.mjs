@@ -6,7 +6,7 @@ import { run } from '../lib/exec.mjs';
 import { interactiveArgs } from '../lib/adapters.mjs';
 import { repoInfo } from '../lib/git.mjs';
 import { runEpic, runExitCode, codexDesktopLock, codexSandboxRaces, CODEX_LOCK_WARNING } from '../lib/run.mjs';
-import { claudeToolkit, codexToolkit, codexMcpServers, skillsBlock, claudeTrusted, grantClaudeTrust, TRUST_HINT } from '../lib/toolkit.mjs';
+import { claudeToolkit, codexToolkit,skillsBlock, claudeTrusted, grantClaudeTrust, TRUST_HINT } from '../lib/toolkit.mjs';
 import { eventLog, readEvents } from '../lib/events.mjs';
 import { summarize, renderSummary, refreshOutcomes, refreshSummary } from '../lib/stats.mjs';
 import { runEval } from '../lib/eval.mjs';
@@ -77,7 +77,6 @@ async function doctor() {
     if (tk.missing.length) throw new Error(`not found: ${tk.missing.join(', ')}`);
     return `hooks: ${(cfg.toolkit?.claude?.hooks ?? []).join(', ') || 'none'}`;
   });
-  if (clis.has('codex') && cfg?.toolkit?.codex?.disableMcp) checks.push(['codex MCP off', 'ok', codexMcpServers().join(', ') || 'none configured']);
   if (clis.has('codex') && cfg) await check('codex toolkit', async () => {
     const tk = codexToolkit(cfg.toolkit?.codex);
     if (tk.missing.length) throw new Error(`not found: ${tk.missing.join(', ')}`);

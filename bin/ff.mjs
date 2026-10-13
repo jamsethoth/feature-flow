@@ -6,7 +6,7 @@ import { run } from '../lib/exec.mjs';
 import { interactiveArgs } from '../lib/adapters.mjs';
 import { repoInfo } from '../lib/git.mjs';
 import { runEpic, runExitCode, codexDesktopLock, codexSandboxRaces, CODEX_LOCK_WARNING } from '../lib/run.mjs';
-import { claudeToolkit, codexToolkit,skillsBlock, claudeTrusted, grantClaudeTrust, TRUST_HINT } from '../lib/toolkit.mjs';
+import { claudeToolkit, codexToolkit, skillsBlock, resolveStageTools, toolsChecks, claudeTrusted, grantClaudeTrust, TRUST_HINT } from '../lib/toolkit.mjs';
 import { eventLog, readEvents } from '../lib/events.mjs';
 import { summarize, renderSummary, refreshOutcomes, refreshSummary } from '../lib/stats.mjs';
 import { runEval } from '../lib/eval.mjs';
@@ -82,6 +82,7 @@ async function doctor() {
     if (tk.missing.length) throw new Error(`not found: ${tk.missing.join(', ')}`);
     return `hooks ${cfg.toolkit?.codex?.hooks === false ? 'off' : 'on'}; injected: ${(cfg.toolkit?.codex?.inject ?? []).join(', ') || 'none'}`;
   });
+  if (cfg) checks.push(...await toolsChecks(cfg, (c, s) => resolveStageTools(c, s, { cwd: here ?? process.cwd() })));
   if (cfg?.style?.internal?.startsWith('caveman')) await check('caveman skill', async () => { if (!loadSkillText('caveman')) throw new Error('style.internal is caveman but no caveman skill in ~/.agents/skills or ~/.claude/skills'); return 'found'; });
   if (cfg) for (const s of STAGES) await check(`persona ${cfg[s].persona}`, async () => loadPersona(cfg[s].persona, await repoRoot().catch(() => null)).path);
   for (const [name, status, detail] of checks) console.log(`${status.padEnd(4)} ${name.padEnd(22)} ${detail}`);

@@ -25,6 +25,16 @@ function epicRepo(testCommand = 'node -e 0') {
   return { root, sh, main };
 }
 
+// Stage-tools preflight fixtures, so runEpic never reads the real Claude home or spawns codex.
+function toolFixtures() {
+  const home = mkdtempSync(join(tmpdir(), 'ff-home-'));
+  const pony = join(home, 'pony');
+  mkdirSync(join(home, 'plugins'), { recursive: true });
+  mkdirSync(pony);
+  writeFileSync(join(home, 'plugins', 'installed_plugins.json'), JSON.stringify({ plugins: { 'ponytail@mkt': [{ installPath: pony }] } }));
+  return { home, cwd: home, codexListings: async () => ({ plugins: ['ponytail@mkt'], mcp: [] }) };
+}
+
 test('runEpic --retry-stuck resets only the named ticket and restarts it at red from the base branch', async () => {
   const { root, sh, main } = epicRepo();
   try {
@@ -54,7 +64,7 @@ test('runEpic --retry-stuck resets only the named ticket and restarts it at red 
       return { out: { status: 'blocked', notes: 'stop after red' }, usage: { input: 0, cached: 0, output: 0 }, session: 's' };
     };
 
-    const results = await run.runEpic(1, { cwd: main, print() {}, retryStuck: [7], deps: { gh, invoke } });
+    const results = await run.runEpic(1, { cwd: main, print() {}, retryStuck: [7], deps: { gh, invoke, tools: toolFixtures() } });
 
     const seven = invoked.find((i) => i.branch === 'ticket/7-thing');
     assert.ok(seven, 'ticket 7 was run');
@@ -85,7 +95,7 @@ test('runEpic surfaces a failed label update with the ticket number in the log a
     const invoke = async () => ({ out: { status: 'blocked', notes: 'stop after red' }, usage: { input: 0, cached: 0, output: 0 }, session: 's' });
     const logs = [];
 
-    const results = await run.runEpic(1, { cwd: main, print: (l) => logs.push(l), deps: { gh, invoke } });
+    const results = await run.runEpic(1, { cwd: main, print: (l) => logs.push(l), deps: { gh, invoke, tools: toolFixtures() } });
 
     assert.ok(logs.some((l) => l.includes('#9') && l.includes('HTTP 502')), 'log names the ticket and the error');
     const events = readFileSync(join(main, '.git', 'feature-flow', 'events.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
@@ -104,7 +114,7 @@ test('a crashed ticket keeps the reason from the later lines of the error in the
     const gh = { ...realGh, viewIssue: async (n) => issue(n), findPr: async () => undefined, editLabels: async () => '', commentIssue: async () => {} };
     const invoke = async () => { throw new Error("git push origin x exited 1\nremote: Permission to o/r denied to u"); };
 
-    const results = await run.runEpic(1, { cwd: main, print() {}, deps: { gh, invoke } });
+    const results = await run.runEpic(1, { cwd: main, print() {}, deps: { gh, invoke, tools: toolFixtures() } });
 
     assert.match(results.find((r) => r.ticket === 9).error, /Permission to o\/r denied/);
     const events = readFileSync(join(main, '.git', 'feature-flow', 'events.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
@@ -124,7 +134,7 @@ test('invoke and the stage_call event carry the stage tools', async () => {
       seen.push({ stageName, tools });
       return { out: { status: 'blocked', notes: 'stop' }, usage: { input: 0, cached: 0, output: 0 }, session: 's' };
     };
-    await run.runEpic(1, { cwd: main, print() {}, deps: { gh, invoke } });
+    await run.runEpic(1, { cwd: main, print() {}, deps: { gh, invoke, tools: toolFixtures() } });
     const want = { skills: ['mattpocock-skills:tdd'], mcp: [], plugins: ['ponytail'] };
     assert.deepEqual(seen[0], { stageName: 'implement', tools: want });
     const events = readFileSync(join(main, '.git', 'feature-flow', 'events.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
@@ -146,7 +156,7 @@ async function redRun(testCommand, tests) {
       writeFileSync(join(cwd, 'new.test.mjs'), '// test\n');
       return { out: { status: 'ok', summary: 's', notes: '', tests }, usage: { input: 0, cached: 0, output: 0 }, session: 's' };
     };
-    await run.runEpic(1, { cwd: main, print() {}, deps: { gh, invoke } });
+    await run.runEpic(1, { cwd: main, print() {}, deps: { gh, invoke, tools: toolFixtures() } });
     const events = readFileSync(join(main, '.git', 'feature-flow', 'events.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
     const subjects = sh(main, 'log', '--format=%s', 'ticket/9-ticket-9').split('\n');
     return { events, prompts, subjects };

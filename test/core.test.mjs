@@ -10,7 +10,7 @@ import { withPrefixedTwins, claudeToolkit, findClaudePlugin, codexMcpServers, co
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { commitAll, discardChanges } from '../lib/git.mjs';
-import { parseOpts } from '../lib/opts.mjs';
+import { parseOpts, positiveInt } from '../lib/opts.mjs';
 import { diffStats, severityCounts } from '../lib/events.mjs';
 import { summarize, renderSummary } from '../lib/stats.mjs';
 import { planShape, claudeTranscriptMetrics, codexTranscriptMetrics, lastRequestContext } from '../lib/planmetrics.mjs';
@@ -328,6 +328,36 @@ test('ff: non-numeric epic or --runs fail with a clear error', () => {
   assert.match(ff('eval', '--plan', 'p.json', '--runs', 'three', 'v.json').err, /--runs.*three/i);
   assert.match(ff('eval', '--plan', 'p.json', '--runs', '0', 'v.json').err, /--runs/i);
   assert.match(ff('eval', '--plan').err, /usage|--plan/i);
+});
+
+test('ff: argument errors print the error and usage', () => {
+  for (const args of [['eval', '--plan'], ['plan', '--bgg', 'x'], ['run', 'abc']]) {
+    const r = ff(...args);
+    assert.equal(r.code, 1, args.join(' '));
+    assert.match(r.err, /feature-flow \(ff\)/, args.join(' '));
+  }
+});
+
+test('ff: doctor and config reject unknown options', () => {
+  assert.equal(ff('config', '--bogus').code, 1);
+  assert.match(ff('doctor', '--bogus').err, /unknown option --bogus/);
+});
+
+test('ff: --help after -- is a positional, not help', () => {
+  const r = ff('run', '--', '--help');
+  assert.equal(r.code, 1);
+  assert.match(r.err, /epic.*--help/i);
+});
+
+test('parseOpts: malformed dashed tokens before -- are rejected', () => {
+  assert.throws(() => parseOpts(['--b.g', 'x'], PLAN_SPEC), /unknown.*--b\.g/i);
+  assert.deepEqual(parseOpts(['--', '--b.g'], PLAN_SPEC), { _: ['--b.g'] });
+});
+
+test('positiveInt: rejects overflow and unsafe integers', () => {
+  assert.equal(positiveInt('42', 'epic'), 42);
+  assert.throws(() => positiveInt('9'.repeat(400), '--runs'), /--runs/);
+  assert.throws(() => positiveInt('9007199254740993', 'epic'), /epic/);
 });
 
 test('pool never exceeds its limit and keeps result order', async () => {

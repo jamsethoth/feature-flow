@@ -12,7 +12,7 @@ import { summarize, renderSummary, refreshOutcomes } from '../lib/stats.mjs';
 import { runEval } from '../lib/eval.mjs';
 import { writePlanMarker, readPlanMarker, clearPlanMarker, claudePlanMetrics, codexPlanMetrics, planShape } from '../lib/planmetrics.mjs';
 import { randomUUID } from 'node:crypto';
-import { parseOpts, positiveInt } from '../lib/opts.mjs';
+import { parseOpts, positiveInt, UsageError } from '../lib/opts.mjs';
 import { publishPlan } from '../lib/publish.mjs';
 import * as gh from '../lib/github.mjs';
 
@@ -222,7 +222,7 @@ async function stats(args) {
 
 async function evalCmd(args) {
   const o = parseOpts(args, SPECS.eval);
-  if (!o.plan || !o._.length) throw new Error('usage: ff eval --plan <plan.json> --runs N --reset "<cmd>" <variant.json>...');
+  if (!o.plan || !o._.length) throw new UsageError('ff eval needs --plan and at least one variant file; usage: ff eval --plan <plan.json> --runs N --reset "<cmd>" <variant.json>...');
   await runEval({ planFile: o.plan, runs: o.runs === undefined ? 1 : positiveInt(o.runs, '--runs'), variantFiles: o._, resetCommand: o.reset ?? 'node eval/reset.mjs' });
   return 0;
 }
@@ -231,13 +231,14 @@ const [cmd, ...rest] = process.argv.slice(2);
 // Positional-only commands: reject stray flags, honour `--`.
 const positional = () => parseOpts(rest, { bools: [], values: [] })._;
 const commands = {
-  doctor, init: () => init(rest), plan: () => plan(rest), publish: () => publish(positional()[0]), run: () => runCmd(positional()[0]),
+  doctor: () => (positional(), doctor()), init: () => init(rest), plan: () => plan(rest), publish: () => publish(positional()[0]), run: () => runCmd(positional()[0]),
   stats: () => stats(rest), eval: () => evalCmd(rest),
   approve: async () => { await gh.editLabels(positiveInt(positional()[0], 'epic number'), { add: ['plan-approved'] }, await repoRoot()); return 0; },
-  config: async () => { console.log(JSON.stringify(loadConfig(await repoRoot().catch(() => null)), null, 2)); return 0; },
+  config: async () => { positional(); console.log(JSON.stringify(loadConfig(await repoRoot().catch(() => null)), null, 2)); return 0; },
   persona: async () => { process.stdout.write(loadPersona(positional()[0], await repoRoot().catch(() => null)).text); return 0; },
 };
-if (cmd === '--help' || rest.includes('--help')) {
+// `--` ends option parsing, so a `--help` after it is a positional, not a help request.
+if (cmd === '--help' || rest.slice(0, rest.includes('--') ? rest.indexOf('--') : undefined).includes('--help')) {
   console.log(USAGE);
   process.exit(0);
 }
@@ -245,4 +246,4 @@ if (!Object.hasOwn(commands, cmd) || (['publish', 'run', 'approve', 'persona'].i
   console.log(USAGE);
   process.exit(cmd ? 1 : 0);
 }
-commands[cmd]().then((code) => process.exit(code), (err) => { console.error(err.message); process.exit(1); });
+commands[cmd]().then((code) => process.exit(code), (err) => { console.error(err.message); if (err.usage) console.error(USAGE); process.exit(1); });

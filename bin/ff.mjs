@@ -6,7 +6,7 @@ import { run } from '../lib/exec.mjs';
 import { interactiveArgs } from '../lib/adapters.mjs';
 import { repoInfo } from '../lib/git.mjs';
 import { runEpic, codexDesktopLock, codexSandboxRaces, CODEX_LOCK_WARNING } from '../lib/run.mjs';
-import { claudeToolkit, codexToolkit, codexMcpServers, skillsBlock, claudeTrusted, grantClaudeTrust, TRUST_HINT } from '../lib/toolkit.mjs';
+import { claudeToolkit, codexToolkit, stageTools, skillsBlock, claudeTrusted, grantClaudeTrust, TRUST_HINT } from '../lib/toolkit.mjs';
 import { eventLog, readEvents } from '../lib/events.mjs';
 import { summarize, renderSummary, refreshOutcomes } from '../lib/stats.mjs';
 import { runEval } from '../lib/eval.mjs';
@@ -72,13 +72,18 @@ async function doctor() {
   if (clis.has('claude') && cfg) await check('claude toolkit', async () => {
     const tk = claudeToolkit(cfg.toolkit?.claude);
     if (tk.missing.length) throw new Error(`not found: ${tk.missing.join(', ')}`);
-    return [...(cfg.toolkit?.claude?.hooks ?? []), ...(cfg.toolkit?.claude?.plugins ?? [])].join(', ') || 'none';
+    return (cfg.toolkit?.claude?.hooks ?? []).join(', ') || 'none';
   });
-  if (clis.has('codex') && cfg?.toolkit?.codex?.disableMcp) checks.push(['codex MCP off', 'ok', codexMcpServers().join(', ') || 'none configured']);
   if (clis.has('codex') && cfg) await check('codex toolkit', async () => {
     const tk = codexToolkit(cfg.toolkit?.codex);
     if (tk.missing.length) throw new Error(`not found: ${tk.missing.join(', ')}`);
     return `hooks ${cfg.toolkit?.codex?.hooks === false ? 'off' : 'on'}; injected: ${(cfg.toolkit?.codex?.inject ?? []).join(', ') || 'none'}`;
+  });
+  if (cfg) for (const s of STAGES) await check(`tools ${s}`, async () => {
+    const { tools, missing } = stageTools(cfg, s);
+    if (missing.length) throw new Error(`not found: ${missing.join(', ')}`);
+    const note = s === 'plan' && (tools.mcp.length || tools.plugins.length) ? ' (mcp/plugins ignored (interactive))' : '';
+    return `skills=${tools.skills.join(',')}; plugins=${tools.plugins.join(',')}; mcp=${tools.mcp.join(',')}${note}`;
   });
   if (cfg?.style?.internal?.startsWith('caveman')) await check('caveman skill', async () => { if (!loadSkillText('caveman')) throw new Error('style.internal is caveman but no caveman skill in ~/.agents/skills or ~/.claude/skills'); return 'found'; });
   if (cfg) for (const s of STAGES) await check(`persona ${cfg[s].persona}`, async () => loadPersona(cfg[s].persona, await repoRoot().catch(() => null)).path);
@@ -154,7 +159,7 @@ async function plan(args) {
   const started = Date.now();
   // The marker lets `ff publish`, run from inside the session, tag the epic with this planId.
   writePlanMarker(dir, { planId, started, background: Boolean(o.bg) });
-  const opening = `Start the feature-flow planning procedure for the repo at ${root}. planApproval is ${cfg.planApproval}.\nFeature request: ${o._.join(' ') || '(ask me for it)'}${skillsBlock(cfg.stageSkills?.plan)}`;
+  const opening = `Start the feature-flow planning procedure for the repo at ${root}. planApproval is ${cfg.planApproval}.\nFeature request: ${o._.join(' ') || '(ask me for it)'}${skillsBlock(cfg.stageTools?.plan?.skills)}`;
   const budget = budgetFor(cfg, 'plan', cfg.plan.model) ?? Infinity;
   const [cmd, cliArgs] = interactiveArgs(cfg.plan, persona, opening, cfg.plan.cli === 'claude' ? planId : undefined, Number.isFinite(budget) ? budget : undefined);
 

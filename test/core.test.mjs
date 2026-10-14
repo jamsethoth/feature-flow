@@ -7,6 +7,7 @@ import { stageForRound, pool, cleanupMerged, checkRed } from '../lib/run.mjs';
 import * as runMod from '../lib/run.mjs';
 import { codexUsage, recordedSandbox, apiCost, lastQuotaPct, invoke } from '../lib/adapters.mjs';
 import { styleBlock, planOpening } from '../lib/stages.mjs';
+import { planLaunch } from '../lib/planlaunch.mjs';
 import { withPrefixedTwins, claudeToolkit, findClaudePlugin, codexToolkit, codexListings, claudeTrusted, grantClaudeTrust } from '../lib/toolkit.mjs';
 import * as toolkitMod from '../lib/toolkit.mjs';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, readdirSync } from 'node:fs';
@@ -769,6 +770,17 @@ test('planner persona writes plans to the plans folder, not the git dir', () => 
   const md = readFileSync(join(fileURLToPath(new URL('..', import.meta.url)), 'personas', 'planner.md'), 'utf8');
   assert.ok(!md.includes('git-common-dir'));
   assert.ok(!md.includes('feature-flow/plans'));
+});
+
+test('the planner launch args carry the opening prompt with the plans folder', () => {
+  // Fixtures, not loadConfig/loadPersona, so the user's own ~/.agents/feature-flow cannot change the result.
+  const cfg = { planApproval: true, plan: { cli: 'claude', model: 'm', effort: 'e', persona: 'planner' } };
+  const userDir = mkdtempSync(join(tmpdir(), 'ff-userdir-'));
+  const dir = plansDir('myrepo', userDir);
+  const { cmd, cliArgs } = planLaunch({ root: '/r', name: 'myrepo', cfg, persona: { path: 'persona.md', text: 'p' }, feature: 'x', planId: 'p1', userDir });
+  assert.equal(cmd, 'claude');
+  assert.ok(existsSync(dir));
+  assert.ok(cliArgs.at(-1).includes(`Plans folder: ${dir}`), cliArgs.at(-1));
 });
 
 test('ff plan creates the plans folder before launching the planner', () => {

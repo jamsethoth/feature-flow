@@ -1,13 +1,12 @@
 #!/usr/bin/env node
 import { readFileSync, existsSync, mkdirSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { loadConfig, loadPersona, loadCommands, loadSkillText, budgetFor, plansDir, STAGES } from '../lib/config.mjs';
-import { planOpening } from '../lib/stages.mjs';
+import { loadConfig, loadPersona, loadCommands, loadSkillText, budgetFor, STAGES } from '../lib/config.mjs';
+import { planLaunch } from '../lib/planlaunch.mjs';
 import { run } from '../lib/exec.mjs';
-import { interactiveArgs } from '../lib/adapters.mjs';
 import { repoInfo } from '../lib/git.mjs';
 import { runEpic, runExitCode, codexDesktopLock, codexSandboxRaces, CODEX_LOCK_WARNING } from '../lib/run.mjs';
-import { claudeToolkit, codexToolkit, skillsBlock, resolveStageTools, toolsChecks, claudeTrusted, grantClaudeTrust, TRUST_HINT } from '../lib/toolkit.mjs';
+import { claudeToolkit, codexToolkit, resolveStageTools, toolsChecks, claudeTrusted, grantClaudeTrust, TRUST_HINT } from '../lib/toolkit.mjs';
 import { eventLog, readEvents } from '../lib/events.mjs';
 import { summarize, renderSummary, refreshOutcomes, refreshSummary } from '../lib/stats.mjs';
 import { runEval } from '../lib/eval.mjs';
@@ -158,11 +157,7 @@ async function plan(args) {
   const started = Date.now();
   // The marker lets `ff publish`, run from inside the session, tag the epic with this planId.
   writePlanMarker(dir, { planId, started, background: Boolean(o.bg) });
-  const plansFolder = plansDir(info.name);
-  mkdirSync(plansFolder, { recursive: true });
-  const opening = planOpening({ root, planApproval: cfg.planApproval, feature: o._.join(' '), plansFolder, skills: skillsBlock(cfg.stageTools?.plan?.skills) });
-  const budget = budgetFor(cfg, 'plan', cfg.plan.model) ?? Infinity;
-  const [cmd, cliArgs] = interactiveArgs(cfg.plan, persona, opening, cfg.plan.cli === 'claude' ? planId : undefined, Number.isFinite(budget) ? budget : undefined);
+  const { cmd, cliArgs } = planLaunch({ root, name: info.name, cfg, persona, feature: o._.join(' '), planId });
 
   if (o.bg) {
     if (cfg.plan.cli !== 'claude') throw new Error('--bg needs plan.cli = claude (Claude Code background sessions)');

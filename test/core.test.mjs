@@ -7,6 +7,7 @@ import { stageForRound, pool, cleanupMerged, checkRed } from '../lib/run.mjs';
 import * as runMod from '../lib/run.mjs';
 import { codexUsage, recordedSandbox, apiCost, lastQuotaPct, invoke } from '../lib/adapters.mjs';
 import { styleBlock, planOpening } from '../lib/stages.mjs';
+import { planLaunch } from '../lib/planlaunch.mjs';
 import { withPrefixedTwins, claudeToolkit, findClaudePlugin, codexToolkit, codexListings, claudeTrusted, grantClaudeTrust } from '../lib/toolkit.mjs';
 import * as toolkitMod from '../lib/toolkit.mjs';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, readdirSync } from 'node:fs';
@@ -769,6 +770,30 @@ test('planner persona writes plans to the plans folder, not the git dir', () => 
   const md = readFileSync(join(fileURLToPath(new URL('..', import.meta.url)), 'personas', 'planner.md'), 'utf8');
   assert.ok(!md.includes('git-common-dir'));
   assert.ok(!md.includes('feature-flow/plans'));
+});
+
+test('the planner launch args carry the opening prompt with the plans folder', () => {
+  // Fixtures, not loadConfig/loadPersona, so the user's own ~/.agents/feature-flow cannot change the result.
+  const cfg = { planApproval: true, plan: { cli: 'claude', model: 'm', effort: 'e', persona: 'planner' } };
+  const userDir = mkdtempSync(join(tmpdir(), 'ff-userdir-'));
+  const dir = plansDir('myrepo', userDir);
+  const { cmd, cliArgs } = planLaunch({ root: '/r', name: 'myrepo', cfg, persona: { path: 'persona.md', text: 'p' }, feature: 'x', planId: 'p1', userDir });
+  assert.equal(cmd, 'claude');
+  assert.ok(existsSync(dir));
+  assert.ok(cliArgs.at(-1).includes(`Plans folder: ${dir}`), cliArgs.at(-1));
+});
+
+test('ff plan creates the plans folder before launching the planner', () => {
+  const home = mkdtempSync(join(tmpdir(), 'ff-planhome-'));
+  const repo = join(mkdtempSync(join(tmpdir(), 'ff-planrepo-')), 'myrepo');
+  mkdirSync(join(repo, '.agents', 'feature-flow'), { recursive: true });
+  // An unknown plan cli makes interactiveArgs throw after the folder is made and before anything is launched.
+  writeFileSync(join(repo, '.agents', 'feature-flow', 'feature-flow.json'), JSON.stringify({ plan: { cli: 'none' } }));
+  execFileSync('git', ['init', '-q'], { cwd: repo });
+  const env = { ...process.env, HOME: home, USERPROFILE: home };
+  assert.throws(() => execFileSync(process.execPath, [fileURLToPath(new URL('../bin/ff.mjs', import.meta.url)), 'plan', 'x'], { cwd: repo, env, stdio: 'pipe' }),
+    (e) => /no interactive launcher/.test(String(e.stderr)));
+  assert.ok(existsSync(join(home, '.agents', 'feature-flow', 'plans', 'myrepo')));
 });
 
 // Stage-tools preflight. Fixture Claude home has ponytail installed; the fake Codex listing has it too.
